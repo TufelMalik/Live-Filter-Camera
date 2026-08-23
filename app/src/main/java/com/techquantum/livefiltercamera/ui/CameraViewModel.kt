@@ -47,7 +47,7 @@ data class CameraUiState(
     val showGalleryScreen: Boolean = false,
     val isLoadingLut: Boolean = false,
     val isPreloadingLuts: Boolean = true,
-    val zoomRatio: Float = 0.0f,
+    val zoomRatio: Float = 0.5f,
     // Photo Capture & Burst States
     val isCapturingPhoto: Boolean = false,
     val isBurstCapturing: Boolean = false,
@@ -60,18 +60,13 @@ data class CameraUiState(
     val recordingDurationSec: Int = 0,
     // Live Comparison (Before / After)
     val isComparingOriginal: Boolean = false,
+    val filterThumbnails: Map<String, Bitmap> = emptyMap(),
     // UI Visibility & Auto-hide
     val isControlsVisible: Boolean = true,
     val isIntensitySliderVisible: Boolean = false
 ) {
     val displayedPresets: List<FilterPreset>
         get() = when (selectedCategory) {
-            FilterCategory.ALL -> {
-                val normalPreset = presets.find { it.id == "normal" }
-                val otherPresets = presets.filter { it.id != "normal" }
-                val (favorites, nonFavorites) = otherPresets.partition { favoriteFilterIds.contains(it.id) }
-                listOfNotNull(normalPreset) + favorites + nonFavorites
-            }
             FilterCategory.FAVORITES -> {
                 presets.filter { favoriteFilterIds.contains(it.id) }
             }
@@ -83,9 +78,8 @@ data class CameraUiState(
                 emptyList()
             }
             else -> {
-                val catPresets = presets.filter { it.category == selectedCategory }
-                val (favorites, nonFavorites) = catPresets.partition { favoriteFilterIds.contains(it.id) }
-                favorites + nonFavorites
+                // Continuous slidable list from original till end across all categories
+                presets
             }
         }
 }
@@ -114,6 +108,16 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         resetControlsAutoHideTimer()
+        // Initialize person face filter thumbnails on app start
+        com.techquantum.livefiltercamera.lut.FilterThumbnailGenerator.initializePersonThumbnails(application)
+
+        // Observe filter thumbnail updates
+        viewModelScope.launch {
+            com.techquantum.livefiltercamera.lut.FilterThumbnailGenerator.thumbnailsFlow.collect { thumbs ->
+                _uiState.update { it.copy(filterThumbnails = thumbs) }
+            }
+        }
+
         // Eagerly preload ALL LUT bitmaps in the background at app start
         preloadAllLuts()
     }
@@ -136,6 +140,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.Default) {
             LutLoader.preloadAll(getApplication(), allLutPaths)
             _uiState.update { it.copy(isPreloadingLuts = false) }
+            // Render person face thumbnails once all LUTs are preloaded
+            com.techquantum.livefiltercamera.lut.FilterThumbnailGenerator.initializePersonThumbnails(getApplication())
         }
     }
 
@@ -161,27 +167,48 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun setScrolledCategory(category: FilterCategory) {
+        if (_uiState.value.selectedCategory != category &&
+            _uiState.value.selectedCategory != FilterCategory.FAVORITES &&
+            _uiState.value.selectedCategory != FilterCategory.RECENT &&
+            _uiState.value.selectedCategory != FilterCategory.BEAUTY
+        ) {
+            _uiState.update { it.copy(selectedCategory = category) }
+        }
+    }
+
     /**
      * Ultra-fast filter selection:
-     * 1. Instantly update the UI state (no loading spinner)
-     * 2. Grab the pre-cached LUT bitmap from memory (0ms)
+     * 1. Instantly update the UI state and add to recents
+     * 2. Grab the pre-cached LUT bitmap or HD enhance filter
      * 3. Apply to GPU pipeline immediately
      * Falls back to async loading only if the cache somehow misses.
      */
     fun selectPreset(preset: FilterPreset) {
         if (_uiState.value.isRecordingVideo) return
 
+        // Update recents list on selection
+        val updatedRecents = if (preset.id != "normal") {
+            filterPreferences.addRecentFilterId(preset.id)
+        } else {
+            _uiState.value.recentFilterIds
+        }
+
         // Update UI state immediately for responsive feel
         _uiState.update {
             it.copy(
                 selectedPreset = preset,
-                isIntensitySliderVisible = preset.lutAssetPath != null
+                recentFilterIds = updatedRecents,
+                isIntensitySliderVisible = preset.lutAssetPath != null || preset.isHDEnhance
             )
         }
         resetControlsAutoHideTimer()
         resetSliderAutoHideTimer()
 
-        if (preset.lutAssetPath != null) {
+        if (preset.isHDEnhance) {
+            // HD Enhance Filter preset
+            onPresetChangedListener?.invoke(preset, null)
+        } else if (preset.lutAssetPath != null) {
             // Fast path: try cached bitmap first (instant, no coroutine needed)
             val cachedBitmap = LutLoader.getCachedLutBitmap(preset.lutAssetPath)
             if (cachedBitmap != null) {
@@ -375,7 +402,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setZoomRatio(zoom: Float) {
-        _uiState.update { it.copy(zoomRatio = zoom.coerceIn(0f, 1f)) }
+        _uiState.update { it.copy(zoomRatio = zoom.coerceIn(0.5f, 10f)) }
     }
 
     fun toggleEffectsPanel() {

@@ -29,7 +29,7 @@ class CameraManager(
     private val lifecycleOwner: LifecycleOwner,
     val filterEngine: FilterEngine
 ) {
-    private val TAG = "CameraManager"
+    private val CameraManagerTag = "CameraManager"
     private var cameraProvider: ProcessCameraProvider? = null
     private var camera: Camera? = null
     private var cameraControl: CameraControl? = null
@@ -54,7 +54,7 @@ class CameraManager(
                 bindCameraUseCases()
                 onReady()
             } catch (e: Exception) {
-                Log.e(TAG, "Use case binding failed", e)
+                Log.e(CameraManagerTag, "Use case binding failed", e)
             }
         }, ContextCompat.getMainExecutor(context))
     }
@@ -73,7 +73,7 @@ class CameraManager(
             .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
             .setResolutionStrategy(
                 ResolutionStrategy(
-                    Size(1280, 720),
+                    Size(960, 540),
                     ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
                 )
             )
@@ -82,11 +82,16 @@ class CameraManager(
         // 1. ImageAnalysis UseCase (High-fps live GL preview)
         val imageAnalysis = ImageAnalysis.Builder()
             .setResolutionSelector(resolutionSelector)
-            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
 
-        imageAnalysis.setAnalyzer(cameraExecutor, filterEngine)
+        imageAnalysis.setAnalyzer(
+            Executors.newSingleThreadExecutor { r ->
+                Thread(r, "filter-thread").also { it.priority = Thread.MAX_PRIORITY }
+            },
+            filterEngine
+        )
 
         // 2. ImageCapture UseCase (Full resolution photo capture)
         val imageCaptureBuilder = ImageCapture.Builder()
@@ -117,7 +122,7 @@ class CameraManager(
                         videoCaptureUseCase
                     )
                 } catch (e: Exception) {
-                    Log.w(TAG, "Binding all 3 use cases failed, falling back to analysis and capture: ${e.message}")
+                    Log.w(CameraManagerTag, "Binding all 3 use cases failed, falling back to analysis and capture: ${e.message}")
                     provider.bindToLifecycle(
                         lifecycleOwner,
                         cameraSelector,
@@ -133,16 +138,53 @@ class CameraManager(
             cameraInfo = camera?.cameraInfo
 
             // Set rotation from camera info
-            cameraInfo?.let {
-                filterEngine.setSensorRotation(it.sensorRotationDegrees)
+            cameraInfo?.let { info ->
+                filterEngine.setSensorRotation(info.sensorRotationDegrees)
+                // Set default 0.5x zoom for both front and back cameras
+                applyZoomPreset(selectedZoomPreset)
             }
 
             // Sync flash mode
             applyFlashMode(currentFlashMode)
 
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to bind camera use cases", e)
+            Log.e(CameraManagerTag, "Failed to bind camera use cases", e)
         }
+    }
+
+    private var selectedZoomPreset: Float = 0.5f
+
+    fun setZoomRatio(ratio: Float) {
+        selectedZoomPreset = ratio
+        applyZoomPreset(ratio)
+    }
+
+    fun getZoomRatio(): Float = selectedZoomPreset
+
+    private fun applyZoomPreset(preset: Float) {
+        val info = cameraInfo ?: return
+        val control = cameraControl ?: return
+        val zoomState = info.zoomState.value
+        val minZoom = zoomState?.minZoomRatio ?: 1.0f
+        val maxZoom = zoomState?.maxZoomRatio ?: 8.0f
+
+        val targetRatio = if (minZoom < 0.85f) {
+            // Hardware has native ultra-wide zoom (< 1.0x)
+            when {
+                preset <= 0.55f -> minZoom.coerceIn(0.5f, 1.0f)
+                preset <= 1.1f -> 1.0f
+                else -> 2.0f
+            }.coerceIn(minZoom, maxZoom)
+        } else {
+            // Standard sensor where minZoom (1.0x) is the widest available hardware view
+            when {
+                preset <= 0.55f -> minZoom // 1.0x widest full sensor (0.5x wide view)
+                preset <= 1.1f -> (minZoom * 1.75f).coerceAtMost(maxZoom) // 1.75x standard view (clear difference from 0.5x!)
+                else -> (minZoom * 3.0f).coerceAtMost(maxZoom) // 3.0x close-up (2x view)
+            }.coerceIn(minZoom, maxZoom)
+        }
+
+        control.setZoomRatio(targetRatio)
     }
 
     fun switchCamera() {

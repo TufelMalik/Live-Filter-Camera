@@ -19,5 +19,6 @@ data class FilterPreset(
     val category: FilterCategory = FilterCategory.ALL,
     val lutAssetPath: String? = null,
     val intensity: Float = 1.0f,
-    val gradientColors: List<Long> = listOf(0xFF888888, 0xFF444444)
+    val gradientColors: List<Long> = listOf(0xFF888888, 0xFF444444),
+    val isHDEnhance: Boolean = false
 )

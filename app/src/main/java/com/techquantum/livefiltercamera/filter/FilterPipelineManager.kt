@@ -25,6 +25,8 @@ class FilterPipelineManager(
     )
     private var currentLutFilter: GPUImageLookupFilter? = null
     private var currentLutBitmap: Bitmap? = null
+    private var hdEnhanceFilter: HDEnhanceFilter? = null
+    private var currentHDEnhanceFilter: HDEnhanceFilter? = null
 
     // Pre-allocated shader filter instances (reused, never recreated)
     private var grainFilter: GPUImageCustomShaderFilter? = null
@@ -69,12 +71,15 @@ class FilterPipelineManager(
             e.printStackTrace()
         }
 
-        // Pre-allocate beauty filters with default params
-        smoothFilter = GPUImageGaussianBlurFilter(0.5f)
+        // Pre-allocate beauty filters with default sweet-spot params (0.35f)
+        smoothFilter = GPUImageGaussianBlurFilter(0.35f)
         brightenFilter = GPUImageBrightnessFilter()
         sharpenFilter = GPUImageSharpenFilter()
         whitenFilter = GPUImageWhiteBalanceFilter()
         contrastFilter = GPUImageContrastFilter()
+
+        // Pre-allocate HD Enhance filter
+        hdEnhanceFilter = HDEnhanceFilter(1.0f)
     }
 
     private var activeFilter: GPUImageFilter = passthroughFilter
@@ -82,27 +87,36 @@ class FilterPipelineManager(
     fun getCurrentFilter(): GPUImageFilter = activeFilter
 
     /**
-     * Fast path: Sets a LUT preset using a pre-cached bitmap.
-     * The bitmap should already be loaded from the LutLoader cache.
+     * Fast path: Sets a LUT preset using a pre-cached bitmap or HD Enhance preset.
      */
     fun setLutPreset(preset: FilterPreset, lutBitmap: Bitmap?) {
         currentPreset = preset
         currentLutBitmap = lutBitmap
-        if (lutBitmap != null && preset.lutAssetPath != null) {
-            // Reuse existing LookupFilter if possible, just swap the bitmap
+        if (preset.isHDEnhance) {
+            currentLutFilter = null
+            val hd = hdEnhanceFilter ?: HDEnhanceFilter(preset.intensity)
+            hd.setIntensity(preset.intensity)
+            currentHDEnhanceFilter = hd
+        } else if (lutBitmap != null && preset.lutAssetPath != null) {
+            currentHDEnhanceFilter = null
             val lookup = currentLutFilter ?: GPUImageLookupFilter(preset.intensity)
             lookup.bitmap = lutBitmap
             lookup.setIntensity(preset.intensity)
             currentLutFilter = lookup
         } else {
             currentLutFilter = null
+            currentHDEnhanceFilter = null
         }
         rebuildPipeline()
     }
 
     fun setLutIntensity(intensity: Float) {
         currentPreset = currentPreset.copy(intensity = intensity)
-        currentLutFilter?.setIntensity(intensity)
+        if (currentPreset.isHDEnhance) {
+            currentHDEnhanceFilter?.setIntensity(intensity)
+        } else {
+            currentLutFilter?.setIntensity(intensity)
+        }
         // For intensity-only changes, just update the existing filter without full rebuild
         // Only rebuild if there are stacked effects that need recalculating
         if (hasActiveStackedEffects()) {
@@ -227,8 +241,10 @@ class FilterPipelineManager(
 
         val filterList = mutableListOf<GPUImageFilter>()
 
-        // 1. Base LUT Filter (fresh instance for capture)
-        if (currentLutBitmap != null && currentPreset.lutAssetPath != null) {
+        // 1. Base Preset Filter (HD Enhance or LUT)
+        if (currentPreset.isHDEnhance) {
+            filterList.add(HDEnhanceFilter(currentPreset.intensity))
+        } else if (currentLutBitmap != null && currentPreset.lutAssetPath != null) {
             val lookup = GPUImageLookupFilter(currentPreset.intensity)
             lookup.bitmap = currentLutBitmap
             filterList.add(lookup)
@@ -301,8 +317,10 @@ class FilterPipelineManager(
 
         val filterList = mutableListOf<GPUImageFilter>()
 
-        // 1. Base LUT Filter (reuse the cached instance)
-        if (currentLutFilter != null) {
+        // 1. Base Filter (HD Enhance or LUT)
+        if (currentHDEnhanceFilter != null) {
+            filterList.add(currentHDEnhanceFilter!!)
+        } else if (currentLutFilter != null) {
             filterList.add(currentLutFilter!!)
         }
 

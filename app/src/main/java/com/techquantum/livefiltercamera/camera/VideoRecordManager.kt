@@ -36,7 +36,7 @@ class VideoRecordManager(
     private var activeRecording: Recording? = null
     private var isRecording = false
 
-    private val maxDurationSeconds = 60
+    private val maxDurationSeconds = 300 // 5 minutes max video recording limit
     private var durationHandler = Handler(Looper.getMainLooper())
     private var durationRunnable: Runnable? = null
     private var elapsedSeconds = 0

@@ -3,6 +3,7 @@ package com.techquantum.livefiltercamera.ui
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
@@ -94,6 +95,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -297,9 +299,9 @@ fun CameraScreen(
             }
             .pointerInput(Unit) {
                 detectTransformGestures { _, _, zoom, _ ->
-                    currentZoom = (currentZoom + (zoom - 1f) * 0.75f).coerceIn(0f, 1f)
-                    cameraManager.setLinearZoom(currentZoom)
-                    viewModel.setZoomRatio(currentZoom)
+                    val newZoom = (uiState.zoomRatio * zoom).coerceIn(0.5f, 5.0f)
+                    cameraManager.setZoomRatio(newZoom)
+                    viewModel.setZoomRatio(newZoom)
                 }
             }
     ) {
@@ -391,7 +393,7 @@ fun CameraScreen(
                 val minutes = uiState.recordingDurationSec / 60
                 val seconds = uiState.recordingDurationSec % 60
                 Text(
-                    text = String.format("%02d:%02d / 01:00", minutes, seconds),
+                    text = String.format("%02d:%02d / 05:00", minutes, seconds),
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp
@@ -509,7 +511,7 @@ fun CameraScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Proper Horizontal Filter Intensity Adjustment Slider
-                if (uiState.selectedPreset.lutAssetPath != null && !uiState.isRecordingVideo) {
+                if ((uiState.selectedPreset.lutAssetPath != null || uiState.selectedPreset.isHDEnhance) && !uiState.isRecordingVideo) {
                     FilterIntensitySliderBar(
                         presetName = uiState.selectedPreset.name,
                         presetId = uiState.selectedPreset.id,
@@ -524,6 +526,19 @@ fun CameraScreen(
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                     )
                     Spacer(modifier = Modifier.height(6.dp))
+                }
+
+                // 0.5x / 1x / 2x Zoom Control Bar (0.5x default for both cameras)
+                if (!uiState.isRecordingVideo) {
+                    ZoomControlBar(
+                        currentZoom = uiState.zoomRatio,
+                        onSelectZoom = { zoom ->
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            cameraManager.setZoomRatio(zoom)
+                            viewModel.setZoomRatio(zoom)
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
 
                 // Category Tabs Row (All, Favorites, Recent, Film, Moody, Warm, Cool, Trendy, Bright, Beauty)
@@ -543,10 +558,19 @@ fun CameraScreen(
                     presets = uiState.displayedPresets,
                     selectedPreset = uiState.selectedPreset,
                     favoriteFilterIds = uiState.favoriteFilterIds,
+                    thumbnails = uiState.filterThumbnails,
+                    selectedCategory = uiState.selectedCategory,
                     isEnabled = !uiState.isRecordingVideo,
                     onSelectPreset = { preset ->
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         viewModel.selectPreset(preset)
+                    },
+                    onToggleFavorite = { presetId ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.toggleFavorite(presetId)
+                    },
+                    onCategoryScrolled = { category ->
+                        viewModel.setScrolledCategory(category)
                     },
                     onHoldPreset = { isHolding ->
                         viewModel.setComparingOriginal(isHolding)
@@ -884,16 +908,63 @@ fun FilterIntensitySliderBar(
 }
 
 @Composable
+fun ZoomControlBar(
+    currentZoom: Float,
+    onSelectZoom: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val zoomLevels = listOf(0.5f, 1.0f, 2.0f)
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color.Black.copy(alpha = 0.55f))
+            .padding(horizontal = 6.dp, vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        zoomLevels.forEach { zoom ->
+            val isSelected = kotlin.math.abs(currentZoom - zoom) < 0.2f
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                    .clickable { onSelectZoom(zoom) },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (zoom == 0.5f) ".5x" else "${zoom.toInt()}x",
+                    color = if (isSelected) Color.Black else Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
+
+@Composable
 fun CategoryTabsRow(
     selectedCategory: FilterCategory,
     onSelectCategory: (FilterCategory) -> Unit
 ) {
+    val tabListState = rememberLazyListState()
+
+    // Smoothly scroll the tab bar so the active category tab is centered/visible
+    LaunchedEffect(selectedCategory) {
+        val catIndex = FilterCategory.entries.indexOf(selectedCategory)
+        if (catIndex >= 0) {
+            tabListState.animateScrollToItem((catIndex - 1).coerceAtLeast(0))
+        }
+    }
+
     LazyRow(
+        state = tabListState,
         contentPadding = PaddingValues(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        items(FilterCategory.values()) { category ->
+        items(FilterCategory.entries.toTypedArray()) { category ->
             val isSelected = category == selectedCategory
             Surface(
                 shape = RoundedCornerShape(12.dp),
@@ -910,22 +981,35 @@ fun CategoryTabsRow(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                 ) {
-                    if (category == FilterCategory.FAVORITES) {
-                        Icon(
-                            imageVector = Icons.Default.Favorite,
-                            contentDescription = null,
-                            tint = if (isSelected) Color.Black else Color(0xFFFF4081),
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                    } else if (category == FilterCategory.RECENT) {
-                        Icon(
-                            imageVector = Icons.Default.History,
-                            contentDescription = null,
-                            tint = if (isSelected) Color.Black else Color.White.copy(alpha = 0.8f),
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
+                    when (category) {
+                        FilterCategory.FAVORITES -> {
+                            Icon(
+                                imageVector = Icons.Default.Favorite,
+                                contentDescription = null,
+                                tint = if (isSelected) Color.Black else Color(0xFFFF4081),
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        FilterCategory.RECENT -> {
+                            Icon(
+                                imageVector = Icons.Default.History,
+                                contentDescription = null,
+                                tint = if (isSelected) Color.Black else Color.White.copy(alpha = 0.8f),
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        FilterCategory.BEAUTY -> {
+                            Icon(
+                                imageVector = Icons.Default.AutoFixHigh,
+                                contentDescription = null,
+                                tint = if (isSelected) Color.Black else Color(0xFFFF80AB),
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        else -> {}
                     }
                     Text(
                         text = category.displayName,
@@ -945,8 +1029,12 @@ fun FilterCarousel(
     presets: List<FilterPreset>,
     selectedPreset: FilterPreset,
     favoriteFilterIds: Set<String>,
+    thumbnails: Map<String, Bitmap> = emptyMap(),
+    selectedCategory: FilterCategory,
     isEnabled: Boolean,
     onSelectPreset: (FilterPreset) -> Unit,
+    onToggleFavorite: (String) -> Unit,
+    onCategoryScrolled: (FilterCategory) -> Unit = {},
     onHoldPreset: (Boolean) -> Unit = {}
 ) {
     if (presets.isEmpty()) {
@@ -956,11 +1044,18 @@ fun FilterCarousel(
                 .height(78.dp),
             contentAlignment = Alignment.Center
         ) {
+            val emptyMessage = when (selectedCategory) {
+                FilterCategory.FAVORITES -> "No favorite filters yet\nTap the ❤️ on any filter to save it here!"
+                FilterCategory.RECENT -> "No recent filters yet\nSelect any filter to use it!"
+                FilterCategory.BEAUTY -> "Tap Beauty button above to configure beauty filters"
+                else -> "No filters found in this category"
+            }
             Text(
-                text = "No filters in this category yet",
-                color = Color.White.copy(alpha = 0.65f),
+                text = emptyMessage,
+                color = Color.White.copy(alpha = 0.75f),
                 fontSize = 12.sp,
-                textAlign = TextAlign.Center
+                textAlign = TextAlign.Center,
+                lineHeight = 16.sp
             )
         }
         return
@@ -970,14 +1065,57 @@ fun FilterCarousel(
     val flingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
     val coroutineScope = rememberCoroutineScope()
 
-    // Smooth scroll to center the selected preset when changed
+    // Smooth scroll to center the selected preset when selected by user tap
     LaunchedEffect(selectedPreset.id, presets) {
-        val selectedIndex = presets.indexOfFirst { it.id == selectedPreset.id }
-        if (selectedIndex >= 0) {
-            // Center the selected item smoothly
-            listState.animateScrollToItem(
-                index = (selectedIndex - 1).coerceAtLeast(0)
-            )
+        if (!listState.isScrollInProgress) {
+            val selectedIndex = presets.indexOfFirst { it.id == selectedPreset.id }
+            if (selectedIndex >= 0) {
+                listState.animateScrollToItem(
+                    index = (selectedIndex - 1).coerceAtLeast(0)
+                )
+            }
+        }
+    }
+
+    // Scroll carousel to the first preset of selectedCategory when a category tab is tapped
+    LaunchedEffect(selectedCategory) {
+        if (!listState.isScrollInProgress) {
+            val targetIndex = when (selectedCategory) {
+                FilterCategory.ALL -> 0
+                FilterCategory.FAVORITES, FilterCategory.RECENT, FilterCategory.BEAUTY -> -1
+                else -> presets.indexOfFirst { it.category == selectedCategory }
+            }
+            if (targetIndex >= 0) {
+                listState.animateScrollToItem(targetIndex)
+            }
+        }
+    }
+
+    // Observe live scrolling and sync the active Category Tab with the centered preset
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val layoutInfo = listState.layoutInfo
+            val visibleItems = layoutInfo.visibleItemsInfo
+            if (visibleItems.isEmpty()) null
+            else {
+                val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2
+                val centerItem = visibleItems.minByOrNull {
+                    kotlin.math.abs((it.offset + it.size / 2) - viewportCenter)
+                }
+                centerItem?.index
+            }
+        }.collect { centerIndex ->
+            if (centerIndex != null && listState.isScrollInProgress) {
+                val preset = presets.getOrNull(centerIndex)
+                if (preset != null) {
+                    val category = if (preset.id == "normal" || preset.id == "hd") {
+                        FilterCategory.ALL
+                    } else {
+                        preset.category
+                    }
+                    onCategoryScrolled(category)
+                }
+            }
         }
     }
 
@@ -1001,6 +1139,8 @@ fun FilterCarousel(
             val colors = remember(preset.gradientColors) {
                 preset.gradientColors.map { Color(it) }
             }
+
+            val thumbBitmap = thumbnails[preset.id]
 
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -1029,7 +1169,7 @@ fun FilterCarousel(
                     }
                     .padding(2.dp)
             ) {
-                // Square Preview View Card
+                // Square Preview View Card with Live / Pre-rendered Filter Thumbnail
                 Box(
                     modifier = Modifier
                         .size(56.dp)
@@ -1040,10 +1180,23 @@ fun FilterCarousel(
                         )
                         .padding(2.5.dp)
                         .clip(RoundedCornerShape(10.dp))
-                        .background(Brush.linearGradient(colors)),
+                        .then(
+                            if (thumbBitmap != null) {
+                                Modifier.background(Color.Black)
+                            } else {
+                                Modifier.background(Brush.linearGradient(colors))
+                            }
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (preset.id == "normal") {
+                    if (thumbBitmap != null) {
+                        Image(
+                            bitmap = thumbBitmap.asImageBitmap(),
+                            contentDescription = preset.name,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else if (preset.id == "normal") {
                         Icon(
                             imageVector = Icons.Default.PhotoCamera,
                             contentDescription = null,
@@ -1052,16 +1205,40 @@ fun FilterCarousel(
                         )
                     }
 
-                    if (isFav) {
-                        Icon(
-                            imageVector = Icons.Default.Favorite,
-                            contentDescription = "Favorite",
-                            tint = Color(0xFFFF4081),
+                    if (preset.isHDEnhance) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(2.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Color.Black.copy(alpha = 0.6f))
+                                .padding(horizontal = 3.dp, vertical = 1.dp)
+                        ) {
+                            Text(
+                                text = "HD ✨",
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 7.sp,
+                                fontWeight = FontWeight.Black
+                            )
+                        }
+                    }
+
+                    if (preset.id != "normal") {
+                        Box(
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
-                                .padding(3.dp)
-                                .size(11.dp)
-                        )
+                                .padding(2.dp)
+                                .clickable { onToggleFavorite(preset.id) }
+                        ) {
+                            if (isFav) {
+                                Icon(
+                                    imageVector = Icons.Default.Favorite,
+                                    contentDescription = "Favorite",
+                                    tint = Color(0xFFFF4081),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
                     }
                 }
 

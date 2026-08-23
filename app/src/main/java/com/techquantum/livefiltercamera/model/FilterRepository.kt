@@ -11,6 +11,15 @@ object FilterRepository {
             intensity = 1.0f,
             gradientColors = listOf(0xFFB0BEC5, 0xFF455A64)
         ),
+        FilterPreset(
+            id = "hd",
+            name = "HD ✨",
+            category = FilterCategory.ALL,
+            lutAssetPath = null,
+            intensity = 1.0f,
+            gradientColors = listOf(0xFF00E5FF, 0xFF7C4DFF),
+            isHDEnhance = true
+        ),
         // --- FILM (5) ---
         FilterPreset(
             id = "kodak_gold",
