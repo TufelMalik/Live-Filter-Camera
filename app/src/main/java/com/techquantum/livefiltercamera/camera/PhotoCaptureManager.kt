@@ -61,7 +61,7 @@ class PhotoCaptureManager(
                         }
 
                         val orientedBitmap = if (rotationDegrees != 0 || isFrontCamera) {
-                            Bitmap.createBitmap(
+                            val transformed = Bitmap.createBitmap(
                                 rawBitmap,
                                 0,
                                 0,
@@ -70,12 +70,19 @@ class PhotoCaptureManager(
                                 matrix,
                                 true
                             )
+                            if (transformed != rawBitmap) {
+                                rawBitmap.recycle()
+                            }
+                            transformed
                         } else {
                             rawBitmap
                         }
 
                         // 2. Pass frame through current GPUImage filter pipeline (Bake Filter)
                         val filteredBitmap = filterPipelineManager.applyToBitmap(orientedBitmap)
+                        if (filteredBitmap != orientedBitmap) {
+                            orientedBitmap.recycle()
+                        }
 
                         // 3. Generate a square / proportionate thumbnail
                         val thumbSize = 180
@@ -88,6 +95,7 @@ class PhotoCaptureManager(
 
                         // 4. Save to MediaStore / DCIM
                         val savedUri = saveBitmapToMediaStore(filteredBitmap)
+                        filteredBitmap.recycle()
 
                         if (savedUri != null) {
                             onPhotoSaved(savedUri, thumbnail)
@@ -146,12 +154,19 @@ class PhotoCaptureManager(
                             if (isFrontCamera) matrix.postScale(-1f, 1f)
 
                             val orientedBitmap = if (rotationDegrees != 0 || isFrontCamera) {
-                                Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true)
+                                val transformed = Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true)
+                                if (transformed != rawBitmap) {
+                                    rawBitmap.recycle()
+                                }
+                                transformed
                             } else {
                                 rawBitmap
                             }
 
                             val filteredBitmap = filterPipelineManager.applyToBitmap(orientedBitmap)
+                            if (filteredBitmap != orientedBitmap) {
+                                orientedBitmap.recycle()
+                            }
                             val thumbSize = 180
                             val thumbnail = Bitmap.createScaledBitmap(
                                 filteredBitmap,
@@ -161,6 +176,7 @@ class PhotoCaptureManager(
                             )
 
                             val savedUri = saveBitmapToMediaStore(filteredBitmap)
+                            filteredBitmap.recycle()
                             if (savedUri != null) {
                                 onPhotoSaved(savedUri, thumbnail)
                             }

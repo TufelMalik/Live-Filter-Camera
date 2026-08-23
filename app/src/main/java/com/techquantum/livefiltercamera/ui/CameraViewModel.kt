@@ -44,7 +44,9 @@ data class CameraUiState(
     val countdownRemaining: Int? = null,
     val showEffectsPanel: Boolean = false,
     val showBeautyPanel: Boolean = false,
+    val showHdPanel: Boolean = false,
     val showGalleryScreen: Boolean = false,
+    val hdParameters: com.techquantum.livefiltercamera.model.HdParameters = com.techquantum.livefiltercamera.model.HdParameters(),
     val isLoadingLut: Boolean = false,
     val isPreloadingLuts: Boolean = true,
     val zoomRatio: Float = 0.5f,
@@ -100,6 +102,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private var onLutIntensityChangedListener: ((Float) -> Unit)? = null
     private var onShaderEffectChangedListener: ((String, Boolean, Float) -> Unit)? = null
     private var onBeautyEffectChangedListener: ((String, Boolean, Float) -> Unit)? = null
+    private var onHdOptionChangedListener: ((String, Float) -> Unit)? = null
     private var onBypassChangedListener: ((Boolean) -> Unit)? = null
 
     private var sliderAutoHideJob: Job? = null
@@ -150,12 +153,14 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         onLutIntensityChanged: (Float) -> Unit,
         onShaderEffectChanged: (String, Boolean, Float) -> Unit,
         onBeautyEffectChanged: (String, Boolean, Float) -> Unit,
+        onHdOptionChanged: (String, Float) -> Unit,
         onBypassChanged: (Boolean) -> Unit
     ) {
         this.onPresetChangedListener = onPresetChanged
         this.onLutIntensityChangedListener = onLutIntensityChanged
         this.onShaderEffectChangedListener = onShaderEffectChanged
         this.onBeautyEffectChangedListener = onBeautyEffectChanged
+        this.onHdOptionChangedListener = onHdOptionChanged
         this.onBypassChangedListener = onBypassChanged
     }
 
@@ -229,6 +234,16 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    /**
+     * Fast-path intensity update during active slider drag:
+     * Dispatches directly to GPU pipeline without incurring full UI state recomposition overhead.
+     */
+    fun updateLiveIntensity(intensity: Float) {
+        resetControlsAutoHideTimer()
+        resetSliderAutoHideTimer()
+        onLutIntensityChangedListener?.invoke(intensity)
+    }
+
     fun updatePresetIntensity(intensity: Float) {
         val updated = _uiState.value.selectedPreset.copy(intensity = intensity)
         _uiState.update { it.copy(selectedPreset = updated, isIntensitySliderVisible = true) }
@@ -241,6 +256,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         val originalPreset = FilterRepository.presets.first()
         val defaultEffects = FilterRepository.getDefaultShaderEffects()
         val defaultBeauty = BeautyRepository.getDefaultBeautyEffects()
+        val defaultHd = com.techquantum.livefiltercamera.model.HdParameters()
 
         _uiState.update {
             it.copy(
@@ -248,10 +264,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 selectedCategory = FilterCategory.ALL,
                 shaderEffects = defaultEffects,
                 beautyEffects = defaultBeauty,
+                hdParameters = defaultHd,
                 isComparingOriginal = false,
                 isIntensitySliderVisible = false,
                 showBeautyPanel = false,
-                showEffectsPanel = false
+                showEffectsPanel = false,
+                showHdPanel = false
             )
         }
 
@@ -262,6 +280,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         }
         defaultBeauty.forEach { effect ->
             onBeautyEffectChangedListener?.invoke(effect.id, false, effect.intensity)
+        }
+        defaultHd.toAdjustmentList().forEach { item ->
+            onHdOptionChangedListener?.invoke(item.id, item.value)
         }
         onBypassChangedListener?.invoke(false)
     }
@@ -407,12 +428,39 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleEffectsPanel() {
         resetControlsAutoHideTimer()
-        _uiState.update { it.copy(showEffectsPanel = !it.showEffectsPanel, showBeautyPanel = false) }
+        _uiState.update { it.copy(showEffectsPanel = !it.showEffectsPanel, showBeautyPanel = false, showHdPanel = false) }
     }
 
     fun toggleBeautyPanel() {
         resetControlsAutoHideTimer()
-        _uiState.update { it.copy(showBeautyPanel = !it.showBeautyPanel, showEffectsPanel = false) }
+        _uiState.update { it.copy(showBeautyPanel = !it.showBeautyPanel, showEffectsPanel = false, showHdPanel = false) }
+    }
+
+    fun toggleHdPanel() {
+        resetControlsAutoHideTimer()
+        _uiState.update { it.copy(showHdPanel = !it.showHdPanel, showEffectsPanel = false, showBeautyPanel = false) }
+    }
+
+    fun updateLiveHdOption(optionId: String, value: Float) {
+        resetControlsAutoHideTimer()
+        resetSliderAutoHideTimer()
+        onHdOptionChangedListener?.invoke(optionId, value)
+    }
+
+    fun updateHdOption(optionId: String, value: Float) {
+        resetControlsAutoHideTimer()
+        resetSliderAutoHideTimer()
+        val updated = _uiState.value.hdParameters.withUpdatedValue(optionId, value)
+        _uiState.update { it.copy(hdParameters = updated) }
+        onHdOptionChangedListener?.invoke(optionId, value)
+    }
+
+    fun resetHdParameters() {
+        val defaultParams = com.techquantum.livefiltercamera.model.HdParameters()
+        _uiState.update { it.copy(hdParameters = defaultParams) }
+        defaultParams.toAdjustmentList().forEach { item ->
+            onHdOptionChangedListener?.invoke(item.id, item.value)
+        }
     }
 
     fun openGallery() {

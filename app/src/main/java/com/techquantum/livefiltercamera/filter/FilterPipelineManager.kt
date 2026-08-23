@@ -27,6 +27,7 @@ class FilterPipelineManager(
     private var currentLutBitmap: Bitmap? = null
     private var hdEnhanceFilter: HDEnhanceFilter? = null
     private var currentHDEnhanceFilter: HDEnhanceFilter? = null
+    private var currentHdParameters = com.techquantum.livefiltercamera.model.HdParameters()
 
     // Pre-allocated shader filter instances (reused, never recreated)
     private var grainFilter: GPUImageCustomShaderFilter? = null
@@ -94,8 +95,8 @@ class FilterPipelineManager(
         currentLutBitmap = lutBitmap
         if (preset.isHDEnhance) {
             currentLutFilter = null
-            val hd = hdEnhanceFilter ?: HDEnhanceFilter(preset.intensity)
-            hd.setIntensity(preset.intensity)
+            val hd = hdEnhanceFilter ?: HDEnhanceFilter(preset.intensity, currentHdParameters)
+            hd.setHdParameters(currentHdParameters.copy(masterIntensity = preset.intensity))
             currentHDEnhanceFilter = hd
         } else if (lutBitmap != null && preset.lutAssetPath != null) {
             currentHDEnhanceFilter = null
@@ -113,6 +114,7 @@ class FilterPipelineManager(
     fun setLutIntensity(intensity: Float) {
         currentPreset = currentPreset.copy(intensity = intensity)
         if (currentPreset.isHDEnhance) {
+            currentHdParameters = currentHdParameters.copy(masterIntensity = intensity)
             currentHDEnhanceFilter?.setIntensity(intensity)
         } else {
             currentLutFilter?.setIntensity(intensity)
@@ -123,6 +125,26 @@ class FilterPipelineManager(
             rebuildPipeline()
         } else {
             // Fast path: intensity change doesn't need pipeline rebuild
+            onPipelineChanged(activeFilter)
+        }
+    }
+
+    fun updateHdOption(optionId: String, value: Float) {
+        currentHdParameters = currentHdParameters.withUpdatedValue(optionId, value)
+        currentHDEnhanceFilter?.setOption(optionId, value)
+        if (hasActiveStackedEffects()) {
+            rebuildPipeline()
+        } else {
+            onPipelineChanged(activeFilter)
+        }
+    }
+
+    fun setHdParameters(parameters: com.techquantum.livefiltercamera.model.HdParameters) {
+        currentHdParameters = parameters
+        currentHDEnhanceFilter?.setHdParameters(parameters)
+        if (hasActiveStackedEffects()) {
+            rebuildPipeline()
+        } else {
             onPipelineChanged(activeFilter)
         }
     }
@@ -243,7 +265,7 @@ class FilterPipelineManager(
 
         // 1. Base Preset Filter (HD Enhance or LUT)
         if (currentPreset.isHDEnhance) {
-            filterList.add(HDEnhanceFilter(currentPreset.intensity))
+            filterList.add(HDEnhanceFilter(currentPreset.intensity, currentHdParameters))
         } else if (currentLutBitmap != null && currentPreset.lutAssetPath != null) {
             val lookup = GPUImageLookupFilter(currentPreset.intensity)
             lookup.bitmap = currentLutBitmap

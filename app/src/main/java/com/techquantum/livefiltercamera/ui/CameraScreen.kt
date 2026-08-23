@@ -85,6 +85,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -125,8 +126,10 @@ import com.techquantum.livefiltercamera.gallery.GalleryScreen
 import com.techquantum.livefiltercamera.model.BeautyEffect
 import com.techquantum.livefiltercamera.model.FilterCategory
 import com.techquantum.livefiltercamera.model.FilterPreset
+import com.techquantum.livefiltercamera.model.HdParameters
 import com.techquantum.livefiltercamera.model.ShaderEffect
 import jp.co.cyberagent.android.gpuimage.GPUImageView
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -188,9 +191,6 @@ fun CameraScreen(
     val filterEngine = remember { FilterEngine(context, gpuImageView) }
     val cameraManager = remember { CameraManager(context, lifecycleOwner, filterEngine) }
 
-    // Zoom Pinch State
-    var currentZoom by remember { mutableFloatStateOf(0f) }
-
     // Connect ViewModel to Filter Engine
     LaunchedEffect(Unit) {
         viewModel.setFilterListeners(
@@ -205,6 +205,9 @@ fun CameraScreen(
             },
             onBeautyEffectChanged = { effectId, isEnabled, intensity ->
                 filterEngine.pipelineManager.updateBeautyEffect(effectId, isEnabled, intensity)
+            },
+            onHdOptionChanged = { optionId, value ->
+                filterEngine.pipelineManager.updateHdOption(optionId, value)
             },
             onBypassChanged = { bypass ->
                 filterEngine.pipelineManager.setBypass(bypass)
@@ -234,34 +237,6 @@ fun CameraScreen(
             onError = { e ->
                 coroutineScope.launch {
                     Toast.makeText(context, "Capture failed: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
-            }
-        )
-    }
-
-    fun executeBurstCapture() {
-        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-        cameraManager.photoCaptureManager.captureBurst(
-            imageCapture = cameraManager.imageCapture,
-            isFrontCamera = cameraManager.isFrontCamera(),
-            totalCount = 5,
-            onBurstProgress = { current, total ->
-                viewModel.setBurstProgress(current, total)
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-            },
-            onPhotoSaved = { uri, thumb ->
-                viewModel.onMediaSaved(uri, thumb)
-            },
-            onBurstComplete = {
-                viewModel.endBurst()
-                coroutineScope.launch {
-                    Toast.makeText(context, "Burst completed (5 photos saved)!", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onError = { e ->
-                viewModel.endBurst()
-                coroutineScope.launch {
-                    Toast.makeText(context, "Burst error: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         )
@@ -473,25 +448,6 @@ fun CameraScreen(
             }
         }
 
-        // Burst Progress HUD Overlay
-        if (uiState.isBurstCapturing && uiState.burstProgress != null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color.Black.copy(alpha = 0.75f))
-                    .padding(horizontal = 24.dp, vertical = 14.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Burst: ${uiState.burstProgress?.first} / ${uiState.burstProgress?.second}",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp
-                )
-            }
-        }
-
         // 5. Comparison Indicator Overlay
         SplitCompareOverlay(
             isComparing = uiState.isComparingOriginal
@@ -516,12 +472,20 @@ fun CameraScreen(
                         presetName = uiState.selectedPreset.name,
                         presetId = uiState.selectedPreset.id,
                         intensity = uiState.selectedPreset.intensity,
+                        isHDEnhance = uiState.selectedPreset.isHDEnhance,
+                        hdParameters = uiState.hdParameters,
                         isFavorite = uiState.favoriteFilterIds.contains(uiState.selectedPreset.id),
                         onToggleFavorite = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.toggleFavorite(uiState.selectedPreset.id)
                         },
-                        onIntensityChange = { viewModel.updatePresetIntensity(it) },
+                        onOpenHdTune = {
+                            viewModel.toggleHdPanel()
+                        },
+                        onLiveIntensityChange = { viewModel.updateLiveIntensity(it) },
+                        onIntensityChangeFinished = { viewModel.updatePresetIntensity(it) },
+                        onLiveHdOptionChange = { id, value -> viewModel.updateLiveHdOption(id, value) },
+                        onHdOptionChangeFinished = { id, value -> viewModel.updateHdOption(id, value) },
                         onResetIntensity = { viewModel.updatePresetIntensity(1.0f) },
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                     )
@@ -579,17 +543,15 @@ fun CameraScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Capture Controls Row (Gallery, Shutter Button, Reset/Burst Trigger)
+                // Capture Controls Row (Gallery, Shutter Button, Switch Camera)
                 CaptureControlsRow(
                     isRecording = uiState.isRecordingVideo,
                     lastCapturedThumbnail = uiState.lastCapturedThumbnail,
-                    isFilterActive = uiState.selectedPreset.id != "normal",
                     onPhotoCapture = { onShutterTrigger() },
-                    onBurstCapture = { executeBurstCapture() },
-                    onResetFilter = {
+                    onSwitchCamera = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.resetAllFilters()
-                        Toast.makeText(context, "Filters reset to Original", Toast.LENGTH_SHORT).show()
+                        cameraManager.switchCamera()
+                        viewModel.setCameraFacing(cameraManager.isFrontCamera())
                     },
                     onStartVideoRecording = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -647,6 +609,22 @@ fun CameraScreen(
                 onToggleEffect = { viewModel.toggleBeautyEffect(it) },
                 onIntensityChange = { id, value -> viewModel.updateBeautyEffectIntensity(id, value) },
                 onClose = { viewModel.toggleBeautyPanel() }
+            )
+        }
+
+        // 9. HD Pro Enhance Panel
+        AnimatedVisibility(
+            visible = uiState.showHdPanel,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            HDEnhanceBottomSheet(
+                hdParameters = uiState.hdParameters,
+                onOptionLiveChange = { id, value -> viewModel.updateLiveHdOption(id, value) },
+                onOptionChangeFinished = { id, value -> viewModel.updateHdOption(id, value) },
+                onResetAll = { viewModel.resetHdParameters() },
+                onClose = { viewModel.toggleHdPanel() }
             )
         }
     }
@@ -808,15 +786,29 @@ fun TopBarControls(
 
 @Composable
 fun FilterIntensitySliderBar(
+    modifier: Modifier = Modifier,
     presetName: String,
     presetId: String,
     intensity: Float,
+    isHDEnhance: Boolean = false,
+    hdParameters: HdParameters = HdParameters(),
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit,
-    onIntensityChange: (Float) -> Unit,
-    onResetIntensity: () -> Unit,
-    modifier: Modifier = Modifier
+    onOpenHdTune: () -> Unit = {},
+    onLiveIntensityChange: (Float) -> Unit,
+    onIntensityChangeFinished: (Float) -> Unit,
+    onLiveHdOptionChange: (String, Float) -> Unit = { _, _ -> },
+    onHdOptionChangeFinished: (String, Float) -> Unit = { _, _ -> },
+    onResetIntensity: () -> Unit
 ) {
+    val hdItems = remember(hdParameters) { hdParameters.toAdjustmentList() }
+    var selectedHdOptionId by remember(presetId) { mutableStateOf("master") }
+    val currentItem = hdItems.find { it.id == selectedHdOptionId } ?: hdItems.first()
+
+    var localIntensity by remember(presetId, intensity, selectedHdOptionId, isHDEnhance) {
+        mutableFloatStateOf(if (isHDEnhance) currentItem.value else intensity)
+    }
+
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -836,21 +828,21 @@ fun FilterIntensitySliderBar(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Tune,
+                        imageVector = if (isHDEnhance) Icons.Default.AutoAwesome else Icons.Default.Tune,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(14.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = presetName,
+                        text = if (isHDEnhance) "$presetName • ${currentItem.name}" else presetName,
                         color = Color.White,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (presetId != "normal") {
+                    if (presetId != "normal" && !isHDEnhance) {
                         Spacer(modifier = Modifier.width(6.dp))
                         IconButton(
                             onClick = onToggleFavorite,
@@ -863,26 +855,67 @@ fun FilterIntensitySliderBar(
                                 modifier = Modifier.size(14.dp)
                             )
                         }
+                    } else if (isHDEnhance) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.25f),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onOpenHdTune() }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = "Tune HD",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(11.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "All Options",
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 }
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val displayText = if (isHDEnhance) {
+                        currentItem.displayFormat(localIntensity)
+                    } else {
+                        "${(localIntensity * 100).toInt()}%"
+                    }
                     Text(
-                        text = "${(intensity * 100).toInt()}%",
+                        text = displayText,
                         color = Color.White.copy(alpha = 0.9f),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     IconButton(
-                        onClick = onResetIntensity,
+                        onClick = {
+                            val defaultVal = if (isHDEnhance) currentItem.defaultValue else 1.0f
+                            localIntensity = defaultVal
+                            if (isHDEnhance) {
+                                onHdOptionChangeFinished(selectedHdOptionId, defaultVal)
+                            } else {
+                                onResetIntensity()
+                            }
+                        },
                         modifier = Modifier.size(20.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.RestartAlt,
-                            contentDescription = "100%",
+                            contentDescription = "Reset",
                             tint = Color.LightGray,
                             modifier = Modifier.size(14.dp)
                         )
@@ -890,9 +923,53 @@ fun FilterIntensitySliderBar(
                 }
             }
 
+            if (isHDEnhance) {
+                Spacer(modifier = Modifier.height(4.dp))
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    contentPadding = PaddingValues(vertical = 2.dp)
+                ) {
+                    items(hdItems) { item ->
+                        val isSelected = item.id == selectedHdOptionId
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.12f),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    selectedHdOptionId = item.id
+                                    localIntensity = item.value
+                                }
+                        ) {
+                            Text(
+                                text = item.name,
+                                color = if (isSelected) Color.Black else Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
             Slider(
-                value = intensity,
-                onValueChange = onIntensityChange,
+                value = localIntensity,
+                onValueChange = {
+                    localIntensity = it
+                    if (isHDEnhance) {
+                        onLiveHdOptionChange(selectedHdOptionId, it)
+                    } else {
+                        onLiveIntensityChange(it)
+                    }
+                },
+                onValueChangeFinished = {
+                    if (isHDEnhance) {
+                        onHdOptionChangeFinished(selectedHdOptionId, localIntensity)
+                    } else {
+                        onIntensityChangeFinished(localIntensity)
+                    }
+                },
                 valueRange = 0f..1f,
                 colors = SliderDefaults.colors(
                     thumbColor = Color.White,
@@ -1104,7 +1181,7 @@ fun FilterCarousel(
                 }
                 centerItem?.index
             }
-        }.collect { centerIndex ->
+        }.distinctUntilChanged().collect { centerIndex ->
             if (centerIndex != null && listState.isScrollInProgress) {
                 val preset = presets.getOrNull(centerIndex)
                 if (preset != null) {
@@ -1261,11 +1338,9 @@ fun FilterCarousel(
 @Composable
 fun CaptureControlsRow(
     isRecording: Boolean,
-    lastCapturedThumbnail: android.graphics.Bitmap?,
-    isFilterActive: Boolean,
+    lastCapturedThumbnail: Bitmap?,
     onPhotoCapture: () -> Unit,
-    onBurstCapture: () -> Unit,
-    onResetFilter: () -> Unit,
+    onSwitchCamera: () -> Unit,
     onStartVideoRecording: () -> Unit,
     onStopVideoRecording: () -> Unit,
     onOpenGallery: () -> Unit
@@ -1353,36 +1428,22 @@ fun CaptureControlsRow(
             }
         }
 
-        // 3. Burst / Reset Action Button
+        // 3. Switch / Flip Camera Button
         Box(
             modifier = Modifier
                 .size(52.dp)
                 .clip(CircleShape)
                 .border(1.5.dp, Color.White.copy(alpha = 0.6f), CircleShape)
                 .background(Color.Black.copy(alpha = 0.5f))
-                .clickable {
-                    if (isFilterActive) {
-                        onBurstCapture()
-                    } else {
-                        onBurstCapture()
-                    }
-                },
+                .clickable { onSwitchCamera() },
             contentAlignment = Alignment.Center
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    text = "5x",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp
-                )
-                Text(
-                    text = "BURST",
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 8.sp
-                )
-            }
+            Icon(
+                imageVector = Icons.Default.Cameraswitch,
+                contentDescription = "Flip Camera",
+                tint = Color.White,
+                modifier = Modifier.size(24.dp)
+            )
         }
     }
 }
@@ -1595,6 +1656,122 @@ fun ShaderEffectsBottomSheet(
                             )
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun HDEnhanceBottomSheet(
+    hdParameters: HdParameters,
+    onOptionLiveChange: (String, Float) -> Unit,
+    onOptionChangeFinished: (String, Float) -> Unit,
+    onResetAll: () -> Unit,
+    onClose: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(14.dp),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFF18171E).copy(alpha = 0.98f)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp)
+        ) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "HD Pro Customization",
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onResetAll) {
+                        Text(
+                            text = "Reset All",
+                            color = Color(0xFFFF80AB),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    IconButton(onClick = onClose, modifier = Modifier.size(28.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = Color.White.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            val items = hdParameters.toAdjustmentList()
+            items.forEach { item ->
+                var localVal by remember(item.id, item.value) { mutableFloatStateOf(item.value) }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = item.name,
+                            color = Color.White.copy(alpha = 0.9f),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = item.displayFormat(localVal),
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Slider(
+                        value = localVal,
+                        onValueChange = {
+                            localVal = it
+                            onOptionLiveChange(item.id, it)
+                        },
+                        onValueChangeFinished = {
+                            onOptionChangeFinished(item.id, localVal)
+                        },
+                        valueRange = 0f..1f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = MaterialTheme.colorScheme.primary,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(26.dp)
+                    )
                 }
             }
         }

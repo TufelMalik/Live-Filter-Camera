@@ -1,8 +1,12 @@
 package com.techquantum.livefiltercamera.camera
 
 import android.content.Context
+import android.hardware.camera2.CameraCharacteristics
 import android.util.Log
 import android.util.Size
+import androidx.annotation.OptIn
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraInfo
@@ -37,8 +41,13 @@ class CameraManager(
 
     private var lensFacing = CameraSelector.LENS_FACING_BACK
     private var currentFlashMode = FlashMode.OFF
+    private var selectedZoomPreset: Float = 0.5f
+    private var currentActiveSelector: CameraSelector? = null
 
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "filter-analysis-thread").also { it.priority = Thread.MAX_PRIORITY }
+    }
 
     var imageCapture: ImageCapture? = null
         private set
@@ -59,13 +68,96 @@ class CameraManager(
         }, ContextCompat.getMainExecutor(context))
     }
 
+    @OptIn(ExperimentalCamera2Interop::class)
+    private fun getDesiredCameraSelector(isUltraWideDesired: Boolean): CameraSelector {
+        val provider = cameraProvider ?: return if (lensFacing == CameraSelector.LENS_FACING_FRONT) {
+            CameraSelector.DEFAULT_FRONT_CAMERA
+        } else {
+            CameraSelector.DEFAULT_BACK_CAMERA
+        }
+
+        val availableCameras = try {
+            provider.availableCameraInfos
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        val matchingCameras = availableCameras.filter { info ->
+            try {
+                val cam2 = Camera2CameraInfo.from(info)
+                val facing = cam2.getCameraCharacteristic(CameraCharacteristics.LENS_FACING)
+                if (lensFacing == CameraSelector.LENS_FACING_FRONT) {
+                    facing == CameraCharacteristics.LENS_FACING_FRONT
+                } else {
+                    facing == CameraCharacteristics.LENS_FACING_BACK
+                }
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        if (matchingCameras.isEmpty()) {
+            return if (lensFacing == CameraSelector.LENS_FACING_FRONT) {
+                CameraSelector.DEFAULT_FRONT_CAMERA
+            } else {
+                CameraSelector.DEFAULT_BACK_CAMERA
+            }
+        }
+
+        if (isUltraWideDesired) {
+            // Find the camera with the shortest focal length (wide/ultra-wide FOV)
+            val ultraWideCamera = matchingCameras.minByOrNull { info ->
+                try {
+                    val cam2 = Camera2CameraInfo.from(info)
+                    val focalLengths = cam2.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    focalLengths?.firstOrNull() ?: Float.MAX_VALUE
+                } catch (e: Exception) {
+                    Float.MAX_VALUE
+                }
+            }
+
+            if (ultraWideCamera != null && matchingCameras.size > 1) {
+                return ultraWideCamera.cameraSelector
+            }
+        } else {
+            // For standard / zoomed view (1x, 2x), prefer the standard main camera (focal length >= 3.0mm)
+            val mainCamera = matchingCameras.filter { info ->
+                try {
+                    val cam2 = Camera2CameraInfo.from(info)
+                    val focalLengths = cam2.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    val focal = focalLengths?.firstOrNull() ?: 4.0f
+                    focal >= 3.0f
+                } catch (e: Exception) {
+                    true
+                }
+            }.minByOrNull { info ->
+                try {
+                    val cam2 = Camera2CameraInfo.from(info)
+                    val focalLengths = cam2.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    focalLengths?.firstOrNull() ?: 4.0f
+                } catch (e: Exception) {
+                    4.0f
+                }
+            }
+
+            if (mainCamera != null) {
+                return mainCamera.cameraSelector
+            }
+        }
+
+        return matchingCameras.firstOrNull()?.cameraSelector ?: (
+            if (lensFacing == CameraSelector.LENS_FACING_FRONT) CameraSelector.DEFAULT_FRONT_CAMERA
+            else CameraSelector.DEFAULT_BACK_CAMERA
+        )
+    }
+
     private fun bindCameraUseCases() {
         val provider = cameraProvider ?: return
         provider.unbindAll()
 
-        val cameraSelector = CameraSelector.Builder()
-            .requireLensFacing(lensFacing)
-            .build()
+        val isUltraWide = selectedZoomPreset <= 0.75f
+        val cameraSelector = getDesiredCameraSelector(isUltraWide)
+        currentActiveSelector = cameraSelector
 
         filterEngine.setCameraFacing(lensFacing == CameraSelector.LENS_FACING_FRONT)
 
@@ -73,23 +165,21 @@ class CameraManager(
             .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
             .setResolutionStrategy(
                 ResolutionStrategy(
-                    Size(960, 540),
-                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                    Size(1280, 720),
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
                 )
             )
             .build()
 
-        // 1. ImageAnalysis UseCase (High-fps live GL preview)
+        // 1. ImageAnalysis UseCase (High-fps live GL preview with direct RGBA_8888)
         val imageAnalysis = ImageAnalysis.Builder()
             .setResolutionSelector(resolutionSelector)
-            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
 
         imageAnalysis.setAnalyzer(
-            Executors.newSingleThreadExecutor { r ->
-                Thread(r, "filter-thread").also { it.priority = Thread.MAX_PRIORITY }
-            },
+            analysisExecutor,
             filterEngine
         )
 
@@ -111,7 +201,6 @@ class CameraManager(
         val videoCaptureUseCase = videoRecordManager.videoCapture
 
         try {
-            // Check which use cases can be bound together
             camera = if (provider.hasCamera(cameraSelector)) {
                 try {
                     provider.bindToLifecycle(
@@ -140,7 +229,6 @@ class CameraManager(
             // Set rotation from camera info
             cameraInfo?.let { info ->
                 filterEngine.setSensorRotation(info.sensorRotationDegrees)
-                // Set default 0.5x zoom for both front and back cameras
                 applyZoomPreset(selectedZoomPreset)
             }
 
@@ -152,11 +240,16 @@ class CameraManager(
         }
     }
 
-    private var selectedZoomPreset: Float = 0.5f
-
     fun setZoomRatio(ratio: Float) {
         selectedZoomPreset = ratio
-        applyZoomPreset(ratio)
+        val wantsUltraWide = ratio <= 0.75f
+        val desiredSelector = getDesiredCameraSelector(wantsUltraWide)
+
+        if (currentActiveSelector != desiredSelector && cameraProvider != null) {
+            bindCameraUseCases()
+        } else {
+            applyZoomPreset(ratio)
+        }
     }
 
     fun getZoomRatio(): Float = selectedZoomPreset
@@ -169,19 +262,19 @@ class CameraManager(
         val maxZoom = zoomState?.maxZoomRatio ?: 8.0f
 
         val targetRatio = if (minZoom < 0.85f) {
-            // Hardware has native ultra-wide zoom (< 1.0x)
+            // Hardware has native ultra-wide zoom (< 1.0x) on logical multi-camera
             when {
-                preset <= 0.55f -> minZoom.coerceIn(0.5f, 1.0f)
-                preset <= 1.1f -> 1.0f
-                else -> 2.0f
-            }.coerceIn(minZoom, maxZoom)
+                preset <= 0.75f -> minZoom.coerceIn(0.5f, 1.0f)
+                preset <= 1.25f -> 1.0f
+                else -> preset.coerceIn(minZoom, maxZoom)
+            }
         } else {
-            // Standard sensor where minZoom (1.0x) is the widest available hardware view
+            // Standard sensor or dedicated physical camera where minZoom (1.0x) is base wide view
             when {
-                preset <= 0.55f -> minZoom // 1.0x widest full sensor (0.5x wide view)
-                preset <= 1.1f -> (minZoom * 1.75f).coerceAtMost(maxZoom) // 1.75x standard view (clear difference from 0.5x!)
-                else -> (minZoom * 3.0f).coerceAtMost(maxZoom) // 3.0x close-up (2x view)
-            }.coerceIn(minZoom, maxZoom)
+                preset <= 0.75f -> minZoom
+                preset <= 1.25f -> 1.0f.coerceIn(minZoom, maxZoom)
+                else -> preset.coerceIn(minZoom, maxZoom)
+            }
         }
 
         control.setZoomRatio(targetRatio)
@@ -231,5 +324,6 @@ class CameraManager(
         cameraProvider?.unbindAll()
         photoCaptureManager.shutdown()
         cameraExecutor.shutdown()
+        analysisExecutor.shutdown()
     }
 }
