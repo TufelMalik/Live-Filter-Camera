@@ -424,10 +424,13 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun onUserInteraction() {
-        if (!_uiState.value.isControlsVisible) {
-            _uiState.update { it.copy(isControlsVisible = true) }
+        val newVisibility = !_uiState.value.isControlsVisible
+        _uiState.update { it.copy(isControlsVisible = newVisibility) }
+        if (newVisibility) {
+            resetControlsAutoHideTimer()
+        } else {
+            controlsAutoHideJob?.cancel()
         }
-        resetControlsAutoHideTimer()
     }
 
     fun triggerShutterAnimation() {
@@ -484,7 +487,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private fun resetSliderAutoHideTimer() {
         sliderAutoHideJob?.cancel()
         sliderAutoHideJob = viewModelScope.launch {
-            delay(2000)
+            delay(10000)
             _uiState.update { it.copy(isIntensitySliderVisible = false) }
         }
     }
@@ -492,7 +495,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private fun resetControlsAutoHideTimer() {
         controlsAutoHideJob?.cancel()
         controlsAutoHideJob = viewModelScope.launch {
-            delay(4000)
+            delay(10000)
             if (!_uiState.value.showEffectsPanel && !_uiState.value.showBeautyPanel && !_uiState.value.isRecordingVideo) {
                 _uiState.update { it.copy(isControlsVisible = false, isIntensitySliderVisible = false) }
             }
