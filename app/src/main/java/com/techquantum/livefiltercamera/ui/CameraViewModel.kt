@@ -7,9 +7,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.techquantum.livefiltercamera.camera.FlashMode
 import com.techquantum.livefiltercamera.lut.LutLoader
+import com.techquantum.livefiltercamera.model.BeautyEffect
+import com.techquantum.livefiltercamera.model.BeautyRepository
+import com.techquantum.livefiltercamera.model.FilterCategory
 import com.techquantum.livefiltercamera.model.FilterPreset
 import com.techquantum.livefiltercamera.model.FilterRepository
 import com.techquantum.livefiltercamera.model.ShaderEffect
+import com.techquantum.livefiltercamera.model.FilterPreferences
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,74 +23,182 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+enum class TimerMode(val seconds: Int, val label: String) {
+    OFF(0, "Off"),
+    SEC_3(3, "3s"),
+    SEC_5(5, "5s"),
+    SEC_10(10, "10s")
+}
+
 data class CameraUiState(
     val presets: List<FilterPreset> = FilterRepository.presets,
+    val selectedCategory: FilterCategory = FilterCategory.ALL,
     val selectedPreset: FilterPreset = FilterRepository.presets.first(),
+    val favoriteFilterIds: Set<String> = emptySet(),
+    val recentFilterIds: List<String> = emptyList(),
     val shaderEffects: List<ShaderEffect> = FilterRepository.getDefaultShaderEffects(),
+    val beautyEffects: List<BeautyEffect> = BeautyRepository.getDefaultBeautyEffects(),
     val isFrontCamera: Boolean = false,
     val flashMode: FlashMode = FlashMode.OFF,
+    val timerMode: TimerMode = TimerMode.OFF,
+    val countdownRemaining: Int? = null,
     val showEffectsPanel: Boolean = false,
+    val showBeautyPanel: Boolean = false,
+    val showGalleryScreen: Boolean = false,
     val isLoadingLut: Boolean = false,
+    val isPreloadingLuts: Boolean = true,
     val zoomRatio: Float = 0.0f,
-    // Photo Capture States
+    // Photo Capture & Burst States
     val isCapturingPhoto: Boolean = false,
+    val isBurstCapturing: Boolean = false,
+    val burstProgress: Pair<Int, Int>? = null,
     val showShutterFlash: Boolean = false,
     val lastCapturedThumbnail: Bitmap? = null,
     val lastCapturedUri: Uri? = null,
     // Video Recording States
     val isRecordingVideo: Boolean = false,
     val recordingDurationSec: Int = 0,
+    // Live Comparison (Before / After)
+    val isComparingOriginal: Boolean = false,
     // UI Visibility & Auto-hide
     val isControlsVisible: Boolean = true,
     val isIntensitySliderVisible: Boolean = false
-)
+) {
+    val displayedPresets: List<FilterPreset>
+        get() = when (selectedCategory) {
+            FilterCategory.ALL -> {
+                val normalPreset = presets.find { it.id == "normal" }
+                val otherPresets = presets.filter { it.id != "normal" }
+                val (favorites, nonFavorites) = otherPresets.partition { favoriteFilterIds.contains(it.id) }
+                listOfNotNull(normalPreset) + favorites + nonFavorites
+            }
+            FilterCategory.FAVORITES -> {
+                presets.filter { favoriteFilterIds.contains(it.id) }
+            }
+            FilterCategory.RECENT -> {
+                val presetMap = presets.associateBy { it.id }
+                recentFilterIds.mapNotNull { presetMap[it] }
+            }
+            FilterCategory.BEAUTY -> {
+                emptyList()
+            }
+            else -> {
+                val catPresets = presets.filter { it.category == selectedCategory }
+                val (favorites, nonFavorites) = catPresets.partition { favoriteFilterIds.contains(it.id) }
+                favorites + nonFavorites
+            }
+        }
+}
 
 class CameraViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val _uiState = MutableStateFlow(CameraUiState())
+    private val filterPreferences = FilterPreferences(application)
+
+    private val _uiState = MutableStateFlow(
+        CameraUiState(
+            favoriteFilterIds = filterPreferences.getFavoriteFilterIds(),
+            recentFilterIds = filterPreferences.getRecentFilterIds()
+        )
+    )
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
 
     private var onPresetChangedListener: ((FilterPreset, Bitmap?) -> Unit)? = null
     private var onLutIntensityChangedListener: ((Float) -> Unit)? = null
     private var onShaderEffectChangedListener: ((String, Boolean, Float) -> Unit)? = null
+    private var onBeautyEffectChangedListener: ((String, Boolean, Float) -> Unit)? = null
+    private var onBypassChangedListener: ((Boolean) -> Unit)? = null
 
     private var sliderAutoHideJob: Job? = null
     private var controlsAutoHideJob: Job? = null
+    private var countdownJob: Job? = null
 
     init {
         resetControlsAutoHideTimer()
+        // Eagerly preload ALL LUT bitmaps in the background at app start
+        preloadAllLuts()
+    }
+
+    fun toggleFavorite(presetId: String) {
+        if (presetId == "normal") return
+        val updatedFavorites = filterPreferences.toggleFavorite(presetId)
+        _uiState.update { it.copy(favoriteFilterIds = updatedFavorites) }
+    }
+
+    /**
+     * Preloads all 30 LUT .cube files -> 512x512 bitmaps in parallel background threads.
+     * After this completes, every filter click is an instant cache-hit (0ms latency).
+     */
+    private fun preloadAllLuts() {
+        val allLutPaths = FilterRepository.presets
+            .mapNotNull { it.lutAssetPath }
+            .distinct()
+
+        viewModelScope.launch(Dispatchers.Default) {
+            LutLoader.preloadAll(getApplication(), allLutPaths)
+            _uiState.update { it.copy(isPreloadingLuts = false) }
+        }
     }
 
     fun setFilterListeners(
         onPresetChanged: (FilterPreset, Bitmap?) -> Unit,
         onLutIntensityChanged: (Float) -> Unit,
-        onShaderEffectChanged: (String, Boolean, Float) -> Unit
+        onShaderEffectChanged: (String, Boolean, Float) -> Unit,
+        onBeautyEffectChanged: (String, Boolean, Float) -> Unit,
+        onBypassChanged: (Boolean) -> Unit
     ) {
         this.onPresetChangedListener = onPresetChanged
         this.onLutIntensityChangedListener = onLutIntensityChanged
         this.onShaderEffectChangedListener = onShaderEffectChanged
+        this.onBeautyEffectChangedListener = onBeautyEffectChanged
+        this.onBypassChangedListener = onBypassChanged
     }
 
+    fun selectCategory(category: FilterCategory) {
+        resetControlsAutoHideTimer()
+        _uiState.update { it.copy(selectedCategory = category) }
+        if (category == FilterCategory.BEAUTY) {
+            _uiState.update { it.copy(showBeautyPanel = true) }
+        }
+    }
+
+    /**
+     * Ultra-fast filter selection:
+     * 1. Instantly update the UI state (no loading spinner)
+     * 2. Grab the pre-cached LUT bitmap from memory (0ms)
+     * 3. Apply to GPU pipeline immediately
+     * Falls back to async loading only if the cache somehow misses.
+     */
     fun selectPreset(preset: FilterPreset) {
-        if (_uiState.value.isRecordingVideo) return // Locked during video recording
-        _uiState.update { 
+        if (_uiState.value.isRecordingVideo) return
+
+        // Update UI state immediately for responsive feel
+        _uiState.update {
             it.copy(
                 selectedPreset = preset,
-                isLoadingLut = true,
                 isIntensitySliderVisible = preset.lutAssetPath != null
-            ) 
+            )
         }
         resetControlsAutoHideTimer()
         resetSliderAutoHideTimer()
 
-        viewModelScope.launch {
-            val bitmap = if (preset.lutAssetPath != null) {
-                LutLoader.loadLutBitmap(getApplication(), preset.lutAssetPath)
+        if (preset.lutAssetPath != null) {
+            // Fast path: try cached bitmap first (instant, no coroutine needed)
+            val cachedBitmap = LutLoader.getCachedLutBitmap(preset.lutAssetPath)
+            if (cachedBitmap != null) {
+                // INSTANT: Cache hit — apply filter with zero delay
+                onPresetChangedListener?.invoke(preset, cachedBitmap)
             } else {
-                null
+                // Slow fallback: load async (should only happen before preload completes)
+                _uiState.update { it.copy(isLoadingLut = true) }
+                viewModelScope.launch {
+                    val bitmap = LutLoader.loadLutBitmap(getApplication(), preset.lutAssetPath)
+                    _uiState.update { it.copy(isLoadingLut = false) }
+                    onPresetChangedListener?.invoke(preset, bitmap)
+                }
             }
-            _uiState.update { it.copy(isLoadingLut = false) }
-            onPresetChangedListener?.invoke(preset, bitmap)
+        } else {
+            // "Original" / no LUT — instant clear
+            onPresetChangedListener?.invoke(preset, null)
         }
     }
 
@@ -95,6 +208,63 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         resetControlsAutoHideTimer()
         resetSliderAutoHideTimer()
         onLutIntensityChangedListener?.invoke(intensity)
+    }
+
+    fun resetAllFilters() {
+        val originalPreset = FilterRepository.presets.first()
+        val defaultEffects = FilterRepository.getDefaultShaderEffects()
+        val defaultBeauty = BeautyRepository.getDefaultBeautyEffects()
+
+        _uiState.update {
+            it.copy(
+                selectedPreset = originalPreset,
+                selectedCategory = FilterCategory.ALL,
+                shaderEffects = defaultEffects,
+                beautyEffects = defaultBeauty,
+                isComparingOriginal = false,
+                isIntensitySliderVisible = false,
+                showBeautyPanel = false,
+                showEffectsPanel = false
+            )
+        }
+
+        onPresetChangedListener?.invoke(originalPreset, null)
+        onLutIntensityChangedListener?.invoke(1.0f)
+        defaultEffects.forEach { effect ->
+            onShaderEffectChangedListener?.invoke(effect.id, false, effect.intensity)
+        }
+        defaultBeauty.forEach { effect ->
+            onBeautyEffectChangedListener?.invoke(effect.id, false, effect.intensity)
+        }
+        onBypassChangedListener?.invoke(false)
+    }
+
+    fun toggleBeautyEffect(effectId: String) {
+        resetControlsAutoHideTimer()
+        val currentEffects = _uiState.value.beautyEffects.map { effect ->
+            if (effect.id == effectId) {
+                val updated = effect.copy(isEnabled = !effect.isEnabled)
+                onBeautyEffectChangedListener?.invoke(updated.id, updated.isEnabled, updated.intensity)
+                updated
+            } else {
+                effect
+            }
+        }
+        _uiState.update { it.copy(beautyEffects = currentEffects) }
+    }
+
+    fun updateBeautyEffectIntensity(effectId: String, intensity: Float) {
+        resetControlsAutoHideTimer()
+        val currentEffects = _uiState.value.beautyEffects.map { effect ->
+            if (effect.id == effectId) {
+                val updated = effect.copy(intensity = intensity)
+                onBeautyEffectChangedListener?.invoke(updated.id, updated.isEnabled, updated.intensity)
+                updated
+            } else {
+                effect
+            }
+        }
+        _uiState.update { it.copy(beautyEffects = currentEffects) }
     }
 
     fun toggleShaderEffect(effectId: String) {
@@ -125,6 +295,64 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(shaderEffects = currentEffects) }
     }
 
+    fun cycleTimerMode(): TimerMode {
+        resetControlsAutoHideTimer()
+        val next = when (_uiState.value.timerMode) {
+            TimerMode.OFF -> TimerMode.SEC_3
+            TimerMode.SEC_3 -> TimerMode.SEC_5
+            TimerMode.SEC_5 -> TimerMode.SEC_10
+            TimerMode.SEC_10 -> TimerMode.OFF
+        }
+        _uiState.update { it.copy(timerMode = next) }
+        return next
+    }
+
+    fun startTimerCountdown(onComplete: () -> Unit) {
+        val totalSec = _uiState.value.timerMode.seconds
+        if (totalSec <= 0) {
+            onComplete()
+            return
+        }
+
+        countdownJob?.cancel()
+        countdownJob = viewModelScope.launch {
+            for (sec in totalSec downTo 1) {
+                _uiState.update { it.copy(countdownRemaining = sec) }
+                delay(1000)
+            }
+            _uiState.update { it.copy(countdownRemaining = null) }
+            onComplete()
+        }
+    }
+
+    fun cancelTimerCountdown() {
+        countdownJob?.cancel()
+        _uiState.update { it.copy(countdownRemaining = null) }
+    }
+
+    fun setBurstProgress(current: Int, total: Int) {
+        _uiState.update {
+            it.copy(
+                isBurstCapturing = true,
+                burstProgress = Pair(current, total),
+                showShutterFlash = true
+            )
+        }
+        viewModelScope.launch {
+            delay(80)
+            _uiState.update { it.copy(showShutterFlash = false) }
+        }
+    }
+
+    fun endBurst() {
+        _uiState.update { it.copy(isBurstCapturing = false, burstProgress = null) }
+    }
+
+    fun setComparingOriginal(isComparing: Boolean) {
+        _uiState.update { it.copy(isComparingOriginal = isComparing) }
+        onBypassChangedListener?.invoke(isComparing)
+    }
+
     fun cycleFlashMode(): FlashMode {
         resetControlsAutoHideTimer()
         val nextMode = when (_uiState.value.flashMode) {
@@ -138,11 +366,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setCameraFacing(isFront: Boolean) {
         resetControlsAutoHideTimer()
-        _uiState.update { 
+        _uiState.update {
             it.copy(
                 isFrontCamera = isFront,
                 flashMode = if (isFront && it.flashMode == FlashMode.ON) FlashMode.OFF else it.flashMode
-            ) 
+            )
         }
     }
 
@@ -152,7 +380,20 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleEffectsPanel() {
         resetControlsAutoHideTimer()
-        _uiState.update { it.copy(showEffectsPanel = !it.showEffectsPanel) }
+        _uiState.update { it.copy(showEffectsPanel = !it.showEffectsPanel, showBeautyPanel = false) }
+    }
+
+    fun toggleBeautyPanel() {
+        resetControlsAutoHideTimer()
+        _uiState.update { it.copy(showBeautyPanel = !it.showBeautyPanel, showEffectsPanel = false) }
+    }
+
+    fun openGallery() {
+        _uiState.update { it.copy(showGalleryScreen = true) }
+    }
+
+    fun closeGallery() {
+        _uiState.update { it.copy(showGalleryScreen = false) }
     }
 
     fun onUserInteraction() {
@@ -171,12 +412,19 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun onMediaSaved(uri: Uri, thumbnail: Bitmap?) {
-        _uiState.update { 
+        val currentPresetId = _uiState.value.selectedPreset.id
+        val updatedRecents = if (currentPresetId != "normal") {
+            filterPreferences.addRecentFilterId(currentPresetId)
+        } else {
+            _uiState.value.recentFilterIds
+        }
+        _uiState.update {
             it.copy(
                 lastCapturedUri = uri,
                 lastCapturedThumbnail = thumbnail ?: it.lastCapturedThumbnail,
-                isCapturingPhoto = false
-            ) 
+                isCapturingPhoto = false,
+                recentFilterIds = updatedRecents
+            )
         }
     }
 
@@ -189,13 +437,20 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun onRecordingFinished(uri: Uri, thumbnail: Bitmap?) {
-        _uiState.update { 
+        val currentPresetId = _uiState.value.selectedPreset.id
+        val updatedRecents = if (currentPresetId != "normal") {
+            filterPreferences.addRecentFilterId(currentPresetId)
+        } else {
+            _uiState.value.recentFilterIds
+        }
+        _uiState.update {
             it.copy(
                 isRecordingVideo = false,
                 recordingDurationSec = 0,
                 lastCapturedUri = uri,
-                lastCapturedThumbnail = thumbnail ?: it.lastCapturedThumbnail
-            ) 
+                lastCapturedThumbnail = thumbnail ?: it.lastCapturedThumbnail,
+                recentFilterIds = updatedRecents
+            )
         }
     }
 
@@ -211,7 +466,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         controlsAutoHideJob?.cancel()
         controlsAutoHideJob = viewModelScope.launch {
             delay(4000)
-            if (!_uiState.value.showEffectsPanel && !_uiState.value.isRecordingVideo) {
+            if (!_uiState.value.showEffectsPanel && !_uiState.value.showBeautyPanel && !_uiState.value.isRecordingVideo) {
                 _uiState.update { it.copy(isControlsVisible = false, isIntensitySliderVisible = false) }
             }
         }

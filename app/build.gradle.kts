@@ -14,16 +14,19 @@ android {
         minSdk = 24
         targetSdk = 37
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
         release {
-            optimization {
-                enable = false
-            }
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
     compileOptions {
@@ -58,6 +61,13 @@ dependencies {
 
     // GPUImage
     implementation(libs.gpuimage)
+
+    // Media3 / ExoPlayer
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
+
+    // Coil Compose
+    implementation(libs.coil.compose)
 
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)

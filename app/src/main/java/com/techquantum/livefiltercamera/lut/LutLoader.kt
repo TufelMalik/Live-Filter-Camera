@@ -5,9 +5,10 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.util.concurrent.ConcurrentHashMap
 
 object LutLoader {
@@ -17,7 +18,21 @@ object LutLoader {
 
     private val cache = ConcurrentHashMap<String, Bitmap>()
 
-    suspend fun loadLutBitmap(context: Context, assetPath: String): Bitmap? = withContext(Dispatchers.IO) {
+    @Volatile
+    private var isPreloaded = false
+
+    /**
+     * Returns a cached LUT bitmap instantly if already preloaded.
+     * Falls back to async loading if the cache misses (should not happen after preloadAll).
+     */
+    fun getCachedLutBitmap(assetPath: String): Bitmap? {
+        return cache[assetPath]
+    }
+
+    /**
+     * Async load for a single LUT (with caching). Used as fallback only.
+     */
+    suspend fun loadLutBitmap(context: Context, assetPath: String): Bitmap? = withContext(Dispatchers.Default) {
         cache[assetPath]?.let { return@withContext it }
 
         try {
@@ -30,6 +45,38 @@ object LutLoader {
             null
         }
     }
+
+    /**
+     * Eagerly preloads ALL LUTs in parallel at app startup.
+     * After this completes, every filter click is an instant cache hit with zero latency.
+     */
+    suspend fun preloadAll(context: Context, assetPaths: List<String>) {
+        if (isPreloaded) return
+
+        withContext(Dispatchers.Default) {
+            coroutineScope {
+                val jobs = assetPaths.map { path ->
+                    async {
+                        if (!cache.containsKey(path)) {
+                            try {
+                                val cubeData = parseCubeFile(context, path)
+                                if (cubeData != null) {
+                                    cache[path] = convertCubeTo512Bitmap(cubeData)
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Preload failed for $path: ${e.message}")
+                            }
+                        }
+                    }
+                }
+                jobs.awaitAll()
+            }
+        }
+        isPreloaded = true
+        Log.d(TAG, "Preloaded ${cache.size} LUTs into cache")
+    }
+
+    fun isAllPreloaded(): Boolean = isPreloaded
 
     private class CubeData(
         val size: Int,
@@ -89,7 +136,7 @@ object LutLoader {
 
     private fun parseCubeFile(context: Context, assetPath: String): CubeData? {
         val inputStream = context.assets.open(assetPath)
-        val reader = BufferedReader(InputStreamReader(inputStream))
+        val reader = java.io.BufferedReader(java.io.InputStreamReader(inputStream))
 
         var lutSize = 0
         var totalEntries = 0

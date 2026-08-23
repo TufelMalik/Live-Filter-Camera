@@ -9,7 +9,6 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -19,8 +18,6 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -39,7 +36,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -48,27 +44,33 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Compare
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material.icons.filled.Grain
-import androidx.compose.material.icons.filled.Lens
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.RadioButtonChecked
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Timer10
+import androidx.compose.material.icons.filled.Timer3
+import androidx.compose.material.icons.filled.TimerOff
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.Vignette
-import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -100,7 +102,6 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -108,6 +109,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -117,6 +119,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.techquantum.livefiltercamera.camera.CameraManager
 import com.techquantum.livefiltercamera.camera.FilterEngine
 import com.techquantum.livefiltercamera.camera.FlashMode
+import com.techquantum.livefiltercamera.gallery.GalleryScreen
+import com.techquantum.livefiltercamera.model.BeautyEffect
+import com.techquantum.livefiltercamera.model.FilterCategory
 import com.techquantum.livefiltercamera.model.FilterPreset
 import com.techquantum.livefiltercamera.model.ShaderEffect
 import jp.co.cyberagent.android.gpuimage.GPUImageView
@@ -168,18 +173,18 @@ fun CameraScreen(
         return
     }
 
+    // In-App Gallery Navigation
+    if (uiState.showGalleryScreen) {
+        GalleryScreen(
+            onNavigateBack = { viewModel.closeGallery() }
+        )
+        return
+    }
+
     // Camera and Filter Setup
     val gpuImageView = remember { GPUImageView(context) }
     val filterEngine = remember { FilterEngine(context, gpuImageView) }
     val cameraManager = remember { CameraManager(context, lifecycleOwner, filterEngine) }
-
-    // 3D Flip Animation State
-    var cameraFlipRotation by remember { mutableFloatStateOf(0f) }
-    val animatedFlipRotation by animateFloatAsState(
-        targetValue = cameraFlipRotation,
-        animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
-        label = "camera_flip_anim"
-    )
 
     // Zoom Pinch State
     var currentZoom by remember { mutableFloatStateOf(0f) }
@@ -195,6 +200,12 @@ fun CameraScreen(
             },
             onShaderEffectChanged = { effectId, isEnabled, intensity ->
                 filterEngine.pipelineManager.updateShaderEffect(effectId, isEnabled, intensity)
+            },
+            onBeautyEffectChanged = { effectId, isEnabled, intensity ->
+                filterEngine.pipelineManager.updateBeautyEffect(effectId, isEnabled, intensity)
+            },
+            onBypassChanged = { bypass ->
+                filterEngine.pipelineManager.setBypass(bypass)
             }
         )
     }
@@ -206,25 +217,85 @@ fun CameraScreen(
         }
     }
 
+    fun executeSinglePhotoCapture() {
+        viewModel.triggerShutterAnimation()
+        cameraManager.photoCaptureManager.capturePhoto(
+            imageCapture = cameraManager.imageCapture,
+            isFrontCamera = cameraManager.isFrontCamera(),
+            onCaptureStarted = {},
+            onPhotoSaved = { uri, thumbnail ->
+                viewModel.onMediaSaved(uri, thumbnail)
+                coroutineScope.launch {
+                    Toast.makeText(context, "Photo saved to Gallery!", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onError = { e ->
+                coroutineScope.launch {
+                    Toast.makeText(context, "Capture failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
+
+    fun executeBurstCapture() {
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        cameraManager.photoCaptureManager.captureBurst(
+            imageCapture = cameraManager.imageCapture,
+            isFrontCamera = cameraManager.isFrontCamera(),
+            totalCount = 5,
+            onBurstProgress = { current, total ->
+                viewModel.setBurstProgress(current, total)
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            },
+            onPhotoSaved = { uri, thumb ->
+                viewModel.onMediaSaved(uri, thumb)
+            },
+            onBurstComplete = {
+                viewModel.endBurst()
+                coroutineScope.launch {
+                    Toast.makeText(context, "Burst completed (5 photos saved)!", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onError = { e ->
+                viewModel.endBurst()
+                coroutineScope.launch {
+                    Toast.makeText(context, "Burst error: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
+
+    fun onShutterTrigger() {
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        if (uiState.timerMode.seconds > 0) {
+            viewModel.startTimerCountdown {
+                executeSinglePhotoCapture()
+            }
+        } else {
+            executeSinglePhotoCapture()
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(Unit) {
-                // Tap to show UI & Double-tap to flip camera
                 detectTapGestures(
                     onTap = {
-                        viewModel.onUserInteraction()
+                        if (uiState.countdownRemaining != null) {
+                            viewModel.cancelTimerCountdown()
+                        } else {
+                            viewModel.onUserInteraction()
+                        }
                     },
                     onDoubleTap = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        cameraFlipRotation += 180f
                         cameraManager.switchCamera()
                         viewModel.setCameraFacing(cameraManager.isFrontCamera())
                     }
                 )
             }
             .pointerInput(Unit) {
-                // Pinch to zoom gesture
                 detectTransformGestures { _, _, zoom, _ ->
                     currentZoom = (currentZoom + (zoom - 1f) * 0.75f).coerceIn(0f, 1f)
                     cameraManager.setLinearZoom(currentZoom)
@@ -232,15 +303,10 @@ fun CameraScreen(
                 }
             }
     ) {
-        // 1. Live Filter GPU Preview with 3D Flip Transform
+        // 1. Live Filter GPU Preview (Normal upright without inverted Compose rotation)
         AndroidView(
             factory = { gpuImageView },
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    rotationY = animatedFlipRotation
-                    cameraDistance = 12 * density
-                }
+            modifier = Modifier.fillMaxSize()
         )
 
         // Shutter White Flash Animation
@@ -257,7 +323,7 @@ fun CameraScreen(
             )
         }
 
-        // Top & Bottom Vignette Gradient Overlays for UI Readability
+        // Top & Bottom Vignette Gradient Overlays
         AnimatedVisibility(
             visible = uiState.isControlsVisible || uiState.isRecordingVideo,
             enter = fadeIn(tween(250)),
@@ -272,25 +338,25 @@ fun CameraScreen(
                         .align(Alignment.TopCenter)
                         .background(
                             Brush.verticalGradient(
-                                colors = listOf(Color.Black.copy(alpha = 0.65f), Color.Transparent)
+                                colors = listOf(Color.Black.copy(alpha = 0.75f), Color.Transparent)
                             )
                         )
                 )
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(260.dp)
+                        .height(320.dp)
                         .align(Alignment.BottomCenter)
                         .background(
                             Brush.verticalGradient(
-                                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))
+                                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.95f))
                             )
                         )
                 )
             }
         }
 
-        // 2. Video Recording Top Banner (Pulsing Red Dot + Timer)
+        // 2. Video Recording Top Banner
         if (uiState.isRecordingVideo) {
             val infiniteTransition = rememberInfiniteTransition(label = "recording_pulse")
             val pulseAlpha by infiniteTransition.animateFloat(
@@ -333,7 +399,7 @@ fun CameraScreen(
             }
         }
 
-        // 3. Top Bar Camera Controls
+        // 3. Top Bar Camera Controls (Flash, Timer, Compare, Beauty, Shader FX, Reset, Switch Camera)
         AnimatedVisibility(
             visible = uiState.isControlsVisible && !uiState.isRecordingVideo,
             enter = fadeIn(tween(200)) + slideInVertically { -it },
@@ -342,15 +408,19 @@ fun CameraScreen(
         ) {
             TopBarControls(
                 flashMode = uiState.flashMode,
+                timerMode = uiState.timerMode,
                 isFrontCamera = uiState.isFrontCamera,
                 onCycleFlash = {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     val newMode = viewModel.cycleFlashMode()
                     cameraManager.setFlashMode(newMode)
                 },
+                onCycleTimer = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    viewModel.cycleTimerMode()
+                },
                 onSwitchCamera = {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    cameraFlipRotation += 180f
                     cameraManager.switchCamera()
                     viewModel.setCameraFacing(cameraManager.isFrontCamera())
                 },
@@ -358,90 +428,74 @@ fun CameraScreen(
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     viewModel.toggleEffectsPanel()
                 },
+                onToggleBeauty = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    viewModel.toggleBeautyPanel()
+                },
+                onHoldCompare = { isPressing ->
+                    viewModel.setComparingOriginal(isPressing)
+                },
+                onResetFilters = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.resetAllFilters()
+                    Toast.makeText(context, "Filters reset to Original", Toast.LENGTH_SHORT).show()
+                },
                 modifier = Modifier
                     .statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
             )
         }
 
-        // 4. Side Intensity Slider (Auto-hiding overlay)
-        AnimatedVisibility(
-            visible = uiState.isIntensitySliderVisible && uiState.selectedPreset.lutAssetPath != null,
-            enter = fadeIn(tween(200)) + scaleIn(),
-            exit = fadeOut(tween(200)) + scaleOut(),
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 16.dp)
-        ) {
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.65f)),
-                modifier = Modifier.padding(vertical = 8.dp)
+        // 4. Timer Countdown Fullscreen Overlay
+        uiState.countdownRemaining?.let { count ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.45f)),
+                contentAlignment = Alignment.Center
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 14.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "${(uiState.selectedPreset.intensity * 100).toInt()}%",
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
+                        text = "$count",
+                        fontSize = 110.sp,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.primary
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Box(
-                        modifier = Modifier
-                            .height(160.dp)
-                            .width(36.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Slider(
-                            value = uiState.selectedPreset.intensity,
-                            onValueChange = { viewModel.updatePresetIntensity(it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(
-                                thumbColor = Color.White,
-                                activeTrackColor = MaterialTheme.colorScheme.primary,
-                                inactiveTrackColor = Color.White.copy(alpha = 0.3f)
-                            ),
-                            modifier = Modifier
-                                .graphicsLayer {
-                                    rotationZ = 270f
-                                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 0.5f)
-                                }
-                                .width(160.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Icon(
-                        imageVector = Icons.Default.Tune,
-                        contentDescription = "Intensity",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Tap anywhere to cancel",
+                        color = Color.White.copy(alpha = 0.8f),
+                        fontSize = 14.sp
                     )
                 }
             }
         }
 
-        // 5. Quick Shader Effect Chips Row (Grain, Vignette, Fade, Bloom)
-        AnimatedVisibility(
-            visible = uiState.isControlsVisible && !uiState.isRecordingVideo,
-            enter = fadeIn(tween(200)),
-            exit = fadeOut(tween(200)),
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 190.dp)
-        ) {
-            ShaderQuickTogglesRow(
-                effects = uiState.shaderEffects,
-                onToggle = { id ->
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    viewModel.toggleShaderEffect(id)
-                }
-            )
+        // Burst Progress HUD Overlay
+        if (uiState.isBurstCapturing && uiState.burstProgress != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.Black.copy(alpha = 0.75f))
+                    .padding(horizontal = 24.dp, vertical = 14.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Burst: ${uiState.burstProgress?.first} / ${uiState.burstProgress?.second}",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
+                )
+            }
         }
 
-        // 6. Bottom Controls: Filter Carousel + Shutter & Gallery Controls
+        // 5. Comparison Indicator Overlay
+        SplitCompareOverlay(
+            isComparing = uiState.isComparingOriginal
+        )
+
+        // 6. Unified Bottom Layout (Clean vertical sequencing with NO overlapping items)
         AnimatedVisibility(
             visible = uiState.isControlsVisible || uiState.isRecordingVideo,
             enter = fadeIn(tween(200)) + slideInVertically { it },
@@ -451,56 +505,73 @@ fun CameraScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 28.dp),
+                    .padding(bottom = 20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Snapchat-Style Filter Carousel
+                // Proper Horizontal Filter Intensity Adjustment Slider
+                if (uiState.selectedPreset.lutAssetPath != null && !uiState.isRecordingVideo) {
+                    FilterIntensitySliderBar(
+                        presetName = uiState.selectedPreset.name,
+                        presetId = uiState.selectedPreset.id,
+                        intensity = uiState.selectedPreset.intensity,
+                        isFavorite = uiState.favoriteFilterIds.contains(uiState.selectedPreset.id),
+                        onToggleFavorite = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.toggleFavorite(uiState.selectedPreset.id)
+                        },
+                        onIntensityChange = { viewModel.updatePresetIntensity(it) },
+                        onResetIntensity = { viewModel.updatePresetIntensity(1.0f) },
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+
+                // Category Tabs Row (All, Favorites, Recent, Film, Moody, Warm, Cool, Trendy, Bright, Beauty)
+                if (!uiState.isRecordingVideo) {
+                    CategoryTabsRow(
+                        selectedCategory = uiState.selectedCategory,
+                        onSelectCategory = { category ->
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            viewModel.selectCategory(category)
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+
+                // Filter Carousel with Square Preview Views (Clean cards with preview swatch + name)
                 FilterCarousel(
-                    presets = uiState.presets,
+                    presets = uiState.displayedPresets,
                     selectedPreset = uiState.selectedPreset,
+                    favoriteFilterIds = uiState.favoriteFilterIds,
                     isEnabled = !uiState.isRecordingVideo,
                     onSelectPreset = { preset ->
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         viewModel.selectPreset(preset)
+                    },
+                    onHoldPreset = { isHolding ->
+                        viewModel.setComparingOriginal(isHolding)
                     }
                 )
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
-                // Capture Controls Row (Gallery Button, Shutter Button, FX Toggle)
+                // Capture Controls Row (Gallery, Shutter Button, Reset/Burst Trigger)
                 CaptureControlsRow(
                     isRecording = uiState.isRecordingVideo,
                     lastCapturedThumbnail = uiState.lastCapturedThumbnail,
-                    lastCapturedUri = uiState.lastCapturedUri,
-                    onPhotoCapture = {
+                    isFilterActive = uiState.selectedPreset.id != "normal",
+                    onPhotoCapture = { onShutterTrigger() },
+                    onBurstCapture = { executeBurstCapture() },
+                    onResetFilter = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.triggerShutterAnimation()
-                        cameraManager.photoCaptureManager.capturePhoto(
-                            imageCapture = cameraManager.imageCapture,
-                            isFrontCamera = cameraManager.isFrontCamera(),
-                            onCaptureStarted = {},
-                            onPhotoSaved = { uri, thumbnail ->
-                                viewModel.onMediaSaved(uri, thumbnail)
-                                coroutineScope.launch {
-                                    Toast.makeText(context, "Photo saved to Gallery!", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            onError = { e ->
-                                coroutineScope.launch {
-                                    Toast.makeText(context, "Capture failed: ${e.message}", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        )
+                        viewModel.resetAllFilters()
+                        Toast.makeText(context, "Filters reset to Original", Toast.LENGTH_SHORT).show()
                     },
                     onStartVideoRecording = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         cameraManager.videoRecordManager.startRecording(
-                            onRecordingStarted = {
-                                viewModel.onRecordingStarted()
-                            },
-                            onDurationTick = { sec ->
-                                viewModel.onRecordingTick(sec)
-                            },
+                            onRecordingStarted = { viewModel.onRecordingStarted() },
+                            onDurationTick = { sec -> viewModel.onRecordingTick(sec) },
                             onRecordingFinished = { uri, thumbnail ->
                                 viewModel.onRecordingFinished(uri, thumbnail)
                                 coroutineScope.launch {
@@ -519,21 +590,13 @@ fun CameraScreen(
                         cameraManager.videoRecordManager.stopRecording()
                     },
                     onOpenGallery = {
-                        val galleryIntent = Intent(Intent.ACTION_VIEW).apply {
-                            type = "image/*"
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                        }
-                        try {
-                            context.startActivity(galleryIntent)
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "No gallery app found", Toast.LENGTH_SHORT).show()
-                        }
+                        viewModel.openGallery()
                     }
                 )
             }
         }
 
-        // 7. Expandable Shader Effects Panel (Full Adjustments)
+        // 7. GLSL Shader Effects Panel
         AnimatedVisibility(
             visible = uiState.showEffectsPanel,
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
@@ -547,16 +610,36 @@ fun CameraScreen(
                 onClose = { viewModel.toggleEffectsPanel() }
             )
         }
+
+        // 8. Beauty Effects Panel
+        AnimatedVisibility(
+            visible = uiState.showBeautyPanel,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            BeautyEffectsBottomSheet(
+                effects = uiState.beautyEffects,
+                onToggleEffect = { viewModel.toggleBeautyEffect(it) },
+                onIntensityChange = { id, value -> viewModel.updateBeautyEffectIntensity(id, value) },
+                onClose = { viewModel.toggleBeautyPanel() }
+            )
+        }
     }
 }
 
 @Composable
 fun TopBarControls(
     flashMode: FlashMode,
+    timerMode: TimerMode,
     isFrontCamera: Boolean,
     onCycleFlash: () -> Unit,
+    onCycleTimer: () -> Unit,
     onSwitchCamera: () -> Unit,
     onToggleEffects: () -> Unit,
+    onToggleBeauty: () -> Unit,
+    onHoldCompare: (Boolean) -> Unit,
+    onResetFilters: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -564,14 +647,14 @@ fun TopBarControls(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Flash Mode Cycle Button (Off -> On -> Auto)
+        // Flash Button
         IconButton(
             onClick = onCycleFlash,
             enabled = !isFrontCamera,
             modifier = Modifier
-                .size(46.dp)
+                .size(42.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.45f))
+                .background(Color.Black.copy(alpha = 0.5f))
         ) {
             Icon(
                 imageVector = when (flashMode) {
@@ -585,7 +668,83 @@ fun TopBarControls(
                     FlashMode.AUTO -> MaterialTheme.colorScheme.primary
                     FlashMode.OFF -> Color.White
                 },
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(19.dp)
+            )
+        }
+
+        // Timer Button
+        IconButton(
+            onClick = onCycleTimer,
+            modifier = Modifier
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.5f))
+        ) {
+            Icon(
+                imageVector = when (timerMode) {
+                    TimerMode.OFF -> Icons.Default.TimerOff
+                    TimerMode.SEC_3 -> Icons.Default.Timer3
+                    TimerMode.SEC_5 -> Icons.Default.Timer
+                    TimerMode.SEC_10 -> Icons.Default.Timer10
+                },
+                contentDescription = "Timer: ${timerMode.label}",
+                tint = if (timerMode != TimerMode.OFF) MaterialTheme.colorScheme.primary else Color.White,
+                modifier = Modifier.size(19.dp)
+            )
+        }
+
+        // Hold-to-Compare Button
+        val compareInteraction = remember { MutableInteractionSource() }
+        val isComparePressed by compareInteraction.collectIsPressedAsState()
+        LaunchedEffect(isComparePressed) {
+            onHoldCompare(isComparePressed)
+        }
+
+        IconButton(
+            onClick = {},
+            interactionSource = compareInteraction,
+            modifier = Modifier
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(if (isComparePressed) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.5f))
+        ) {
+            Icon(
+                imageVector = Icons.Default.Compare,
+                contentDescription = "Hold to Compare",
+                tint = if (isComparePressed) Color.Black else Color.White,
+                modifier = Modifier.size(19.dp)
+            )
+        }
+
+        // Reset Filter Button
+        IconButton(
+            onClick = onResetFilters,
+            modifier = Modifier
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.5f))
+        ) {
+            Icon(
+                imageVector = Icons.Default.RestartAlt,
+                contentDescription = "Reset Filters",
+                tint = Color.White,
+                modifier = Modifier.size(19.dp)
+            )
+        }
+
+        // Beauty Filter Panel Button
+        IconButton(
+            onClick = onToggleBeauty,
+            modifier = Modifier
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.5f))
+        ) {
+            Icon(
+                imageVector = Icons.Default.AutoFixHigh,
+                contentDescription = "Beauty Filters",
+                tint = Color(0xFFFF80AB),
+                modifier = Modifier.size(19.dp)
             )
         }
 
@@ -593,15 +752,15 @@ fun TopBarControls(
         IconButton(
             onClick = onToggleEffects,
             modifier = Modifier
-                .size(46.dp)
+                .size(42.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.45f))
+                .background(Color.Black.copy(alpha = 0.5f))
         ) {
             Icon(
                 imageVector = Icons.Default.AutoAwesome,
                 contentDescription = "GLSL Effects",
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(19.dp)
             )
         }
 
@@ -609,66 +768,170 @@ fun TopBarControls(
         IconButton(
             onClick = onSwitchCamera,
             modifier = Modifier
-                .size(46.dp)
+                .size(42.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.45f))
+                .background(Color.Black.copy(alpha = 0.5f))
         ) {
             Icon(
                 imageVector = Icons.Default.Cameraswitch,
                 contentDescription = "Flip Camera",
                 tint = Color.White,
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(19.dp)
             )
         }
     }
 }
 
 @Composable
-fun ShaderQuickTogglesRow(
-    effects: List<ShaderEffect>,
-    onToggle: (String) -> Unit
+fun FilterIntensitySliderBar(
+    presetName: String,
+    presetId: String,
+    intensity: Float,
+    isFavorite: Boolean,
+    onToggleFavorite: () -> Unit,
+    onIntensityChange: (Float) -> Unit,
+    onResetIntensity: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(horizontal = 16.dp)
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.65f))
     ) {
-        effects.forEach { effect ->
-            val icon = when (effect.id) {
-                "grain" -> Icons.Default.Grain
-                "vignette" -> Icons.Default.Vignette
-                "fade" -> Icons.Default.Lens
-                "bloom" -> Icons.Default.WbSunny
-                else -> Icons.Default.AutoAwesome
-            }
-
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = if (effect.isEnabled) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.5f),
-                border = androidx.compose.foundation.BorderStroke(
-                    1.dp,
-                    if (effect.isEnabled) Color.White else Color.White.copy(alpha = 0.25f)
-                ),
-                modifier = Modifier
-                    .clip(RoundedCornerShape(16.dp))
-                    .clickable { onToggle(effect.id) }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = icon,
-                        contentDescription = effect.name,
-                        tint = if (effect.isEnabled) Color.Black else Color.White,
-                        modifier = Modifier.size(16.dp)
+                        imageVector = Icons.Default.Tune,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = presetName,
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (presetId != "normal") {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        IconButton(
+                            onClick = onToggleFavorite,
+                            modifier = Modifier.size(22.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = if (isFavorite) "Unfavorite" else "Favorite",
+                                tint = if (isFavorite) Color(0xFFFF4081) else Color.White.copy(alpha = 0.65f),
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "${(intensity * 100).toInt()}%",
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
                     )
                     Spacer(modifier = Modifier.width(4.dp))
+                    IconButton(
+                        onClick = onResetIntensity,
+                        modifier = Modifier.size(20.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.RestartAlt,
+                            contentDescription = "100%",
+                            tint = Color.LightGray,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+            }
+
+            Slider(
+                value = intensity,
+                onValueChange = onIntensityChange,
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color.White,
+                    activeTrackColor = MaterialTheme.colorScheme.primary,
+                    inactiveTrackColor = Color.White.copy(alpha = 0.25f)
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(24.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun CategoryTabsRow(
+    selectedCategory: FilterCategory,
+    onSelectCategory: (FilterCategory) -> Unit
+) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        items(FilterCategory.values()) { category ->
+            val isSelected = category == selectedCategory
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.6f),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
+                ),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onSelectCategory(category) }
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                ) {
+                    if (category == FilterCategory.FAVORITES) {
+                        Icon(
+                            imageVector = Icons.Default.Favorite,
+                            contentDescription = null,
+                            tint = if (isSelected) Color.Black else Color(0xFFFF4081),
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                    } else if (category == FilterCategory.RECENT) {
+                        Icon(
+                            imageVector = Icons.Default.History,
+                            contentDescription = null,
+                            tint = if (isSelected) Color.Black else Color.White.copy(alpha = 0.8f),
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
                     Text(
-                        text = effect.name.split(" ").first(),
+                        text = category.displayName,
                         fontSize = 11.sp,
-                        fontWeight = if (effect.isEnabled) FontWeight.Bold else FontWeight.Normal,
-                        color = if (effect.isEnabled) Color.Black else Color.White
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) Color.Black else Color.White
                     )
                 }
             }
@@ -681,35 +944,62 @@ fun ShaderQuickTogglesRow(
 fun FilterCarousel(
     presets: List<FilterPreset>,
     selectedPreset: FilterPreset,
+    favoriteFilterIds: Set<String>,
     isEnabled: Boolean,
-    onSelectPreset: (FilterPreset) -> Unit
+    onSelectPreset: (FilterPreset) -> Unit,
+    onHoldPreset: (Boolean) -> Unit = {}
 ) {
+    if (presets.isEmpty()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(78.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "No filters in this category yet",
+                color = Color.White.copy(alpha = 0.65f),
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center
+            )
+        }
+        return
+    }
+
     val listState = rememberLazyListState()
     val flingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
+    val coroutineScope = rememberCoroutineScope()
+
+    // Smooth scroll to center the selected preset when changed
+    LaunchedEffect(selectedPreset.id, presets) {
+        val selectedIndex = presets.indexOfFirst { it.id == selectedPreset.id }
+        if (selectedIndex >= 0) {
+            // Center the selected item smoothly
+            listState.animateScrollToItem(
+                index = (selectedIndex - 1).coerceAtLeast(0)
+            )
+        }
+    }
 
     LazyRow(
         state = listState,
         flingBehavior = flingBehavior,
         modifier = Modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(horizontal = 28.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(horizontal = 24.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         itemsIndexed(presets, key = { _, it -> it.id }) { index, preset ->
             val isSelected = preset.id == selectedPreset.id
+            val isFav = favoriteFilterIds.contains(preset.id)
             val scaleAnim by animateFloatAsState(
-                targetValue = if (isSelected) 1.15f else 0.95f,
-                animationSpec = spring(dampingRatio = 0.7f, stiffness = 400f),
+                targetValue = if (isSelected) 1.08f else 0.95f,
+                animationSpec = spring(dampingRatio = 0.75f, stiffness = 600f),
                 label = "carousel_scale"
             )
 
-            val presetGradient = when (preset.id) {
-                "film_warm" -> listOf(Color(0xFFFF9800), Color(0xFFFF5722))
-                "fade_cool" -> listOf(Color(0xFF00BCD4), Color(0xFF3F51B5))
-                "cinema" -> listOf(Color(0xFF009688), Color(0xFFFF7043))
-                "vintage" -> listOf(Color(0xFF8D6E63), Color(0xFFFFD54F))
-                "moody" -> listOf(Color(0xFF37474F), Color(0xFF212121))
-                else -> listOf(Color.LightGray, Color.DarkGray)
+            val colors = remember(preset.gradientColors) {
+                preset.gradientColors.map { Color(it) }
             }
 
             Column(
@@ -717,20 +1007,40 @@ fun FilterCarousel(
                 modifier = Modifier
                     .scale(scaleAnim)
                     .clip(RoundedCornerShape(14.dp))
-                    .clickable(enabled = isEnabled) { onSelectPreset(preset) }
-                    .padding(4.dp)
+                    .pointerInput(preset.id, isEnabled) {
+                        detectTapGestures(
+                            onTap = {
+                                if (isEnabled) {
+                                    onSelectPreset(preset)
+                                    coroutineScope.launch {
+                                        listState.animateScrollToItem((index - 1).coerceAtLeast(0))
+                                    }
+                                }
+                            },
+                            onPress = {
+                                try {
+                                    onHoldPreset(true)
+                                    awaitRelease()
+                                } finally {
+                                    onHoldPreset(false)
+                                }
+                            }
+                        )
+                    }
+                    .padding(2.dp)
             ) {
+                // Square Preview View Card
                 Box(
                     modifier = Modifier
                         .size(56.dp)
                         .border(
-                            width = if (isSelected) 3.dp else 1.dp,
-                            color = if (isSelected) Color.White else Color.White.copy(alpha = 0.35f),
-                            shape = CircleShape
+                            width = if (isSelected) 2.5.dp else 1.dp,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.35f),
+                            shape = RoundedCornerShape(12.dp)
                         )
-                        .padding(3.dp)
-                        .clip(CircleShape)
-                        .background(Brush.linearGradient(presetGradient)),
+                        .padding(2.5.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Brush.linearGradient(colors)),
                     contentAlignment = Alignment.Center
                 ) {
                     if (preset.id == "normal") {
@@ -741,14 +1051,30 @@ fun FilterCarousel(
                             modifier = Modifier.size(22.dp)
                         )
                     }
+
+                    if (isFav) {
+                        Icon(
+                            imageVector = Icons.Default.Favorite,
+                            contentDescription = "Favorite",
+                            tint = Color(0xFFFF4081),
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(3.dp)
+                                .size(11.dp)
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(4.dp))
+
                 Text(
                     text = preset.name,
-                    color = if (isSelected) Color.White else Color.White.copy(alpha = 0.7f),
-                    fontSize = if (isSelected) 12.sp else 11.sp,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                    color = if (isSelected) Color.White else Color.White.copy(alpha = 0.75f),
+                    fontSize = if (isSelected) 11.sp else 10.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.width(62.dp)
                 )
             }
         }
@@ -759,8 +1085,10 @@ fun FilterCarousel(
 fun CaptureControlsRow(
     isRecording: Boolean,
     lastCapturedThumbnail: android.graphics.Bitmap?,
-    lastCapturedUri: Uri?,
+    isFilterActive: Boolean,
     onPhotoCapture: () -> Unit,
+    onBurstCapture: () -> Unit,
+    onResetFilter: () -> Unit,
     onStartVideoRecording: () -> Unit,
     onStopVideoRecording: () -> Unit,
     onOpenGallery: () -> Unit
@@ -768,7 +1096,7 @@ fun CaptureControlsRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 32.dp),
+            .padding(horizontal = 28.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -785,7 +1113,7 @@ fun CaptureControlsRow(
             if (lastCapturedThumbnail != null) {
                 Image(
                     bitmap = lastCapturedThumbnail.asImageBitmap(),
-                    contentDescription = "Last captured",
+                    contentDescription = "Gallery",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
                 )
@@ -794,7 +1122,7 @@ fun CaptureControlsRow(
                     imageVector = Icons.Default.Photo,
                     contentDescription = "Gallery",
                     tint = Color.White,
-                    modifier = Modifier.size(24.dp)
+                    modifier = Modifier.size(22.dp)
                 )
             }
         }
@@ -803,21 +1131,21 @@ fun CaptureControlsRow(
         val interactionSource = remember { MutableInteractionSource() }
         val isPressed by interactionSource.collectIsPressedAsState()
         val shutterScale by animateFloatAsState(
-            targetValue = if (isPressed || isRecording) 1.2f else 1.0f,
+            targetValue = if (isPressed || isRecording) 1.18f else 1.0f,
             animationSpec = spring(dampingRatio = 0.6f, stiffness = 500f),
             label = "shutter_scale"
         )
 
         Box(
             modifier = Modifier
-                .size(80.dp)
+                .size(76.dp)
                 .scale(shutterScale)
                 .border(
                     width = 4.dp,
                     color = if (isRecording) Color.Red else Color.White,
                     shape = CircleShape
                 )
-                .padding(6.dp)
+                .padding(5.dp)
                 .clip(CircleShape)
                 .background(if (isRecording) Color.Red else Color.White)
                 .pointerInput(isRecording) {
@@ -843,13 +1171,149 @@ fun CaptureControlsRow(
                     imageVector = Icons.Default.Stop,
                     contentDescription = "Stop",
                     tint = Color.White,
-                    modifier = Modifier.size(28.dp)
+                    modifier = Modifier.size(26.dp)
                 )
             }
         }
 
-        // 3. Right Action Spacer (Symmetrical layout)
-        Box(modifier = Modifier.size(52.dp))
+        // 3. Burst / Reset Action Button
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(CircleShape)
+                .border(1.5.dp, Color.White.copy(alpha = 0.6f), CircleShape)
+                .background(Color.Black.copy(alpha = 0.5f))
+                .clickable {
+                    if (isFilterActive) {
+                        onBurstCapture()
+                    } else {
+                        onBurstCapture()
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "5x",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
+                Text(
+                    text = "BURST",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 8.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun BeautyEffectsBottomSheet(
+    effects: List<BeautyEffect>,
+    onToggleEffect: (String) -> Unit,
+    onIntensityChange: (String, Float) -> Unit,
+    onClose: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(14.dp),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFF1E1C24).copy(alpha = 0.96f)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.AutoFixHigh,
+                        contentDescription = null,
+                        tint = Color(0xFFFF80AB)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Beauty Enhancements",
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                IconButton(onClick = onClose, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close",
+                        tint = Color.White.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            effects.forEach { effect ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = effect.name,
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Switch(
+                            checked = effect.isEnabled,
+                            onCheckedChange = { onToggleEffect(effect.id) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = Color(0xFFFF80AB)
+                            )
+                        )
+                    }
+
+                    if (effect.isEnabled) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "${(effect.intensity * 100).toInt()}%",
+                                color = Color.White.copy(alpha = 0.8f),
+                                fontSize = 11.sp,
+                                modifier = Modifier.width(36.dp)
+                            )
+                            Slider(
+                                value = effect.intensity,
+                                onValueChange = { onIntensityChange(effect.id, it) },
+                                valueRange = 0f..1f,
+                                colors = SliderDefaults.colors(
+                                    thumbColor = Color.White,
+                                    activeTrackColor = Color(0xFFFF80AB)
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -863,7 +1327,7 @@ fun ShaderEffectsBottomSheet(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(16.dp),
+            .padding(14.dp),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(
             containerColor = Color(0xFF1E1E24).copy(alpha = 0.96f)
@@ -872,7 +1336,7 @@ fun ShaderEffectsBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp)
+                .padding(18.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -902,13 +1366,13 @@ fun ShaderEffectsBottomSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             effects.forEach { effect ->
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 6.dp)
+                        .padding(vertical = 4.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -918,7 +1382,7 @@ fun ShaderEffectsBottomSheet(
                         Text(
                             text = effect.name,
                             color = Color.White,
-                            fontSize = 14.sp,
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.Medium
                         )
                         Switch(
@@ -939,8 +1403,8 @@ fun ShaderEffectsBottomSheet(
                             Text(
                                 text = "${(effect.intensity * 100).toInt()}%",
                                 color = Color.White.copy(alpha = 0.8f),
-                                fontSize = 12.sp,
-                                modifier = Modifier.width(40.dp)
+                                fontSize = 11.sp,
+                                modifier = Modifier.width(36.dp)
                             )
                             Slider(
                                 value = effect.intensity,

@@ -74,7 +74,7 @@ class CameraManager(
             .setResolutionStrategy(
                 ResolutionStrategy(
                     Size(1280, 720),
-                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
                 )
             )
             .build()

@@ -108,6 +108,98 @@ class PhotoCaptureManager(
         )
     }
 
+    fun captureBurst(
+        imageCapture: ImageCapture?,
+        isFrontCamera: Boolean,
+        totalCount: Int = 5,
+        onBurstProgress: (Int, Int) -> Unit,
+        onPhotoSaved: (Uri, Bitmap) -> Unit,
+        onBurstComplete: () -> Unit,
+        onError: (Exception) -> Unit
+    ) {
+        if (imageCapture == null) {
+            onError(IllegalStateException("ImageCapture use case is not bound or initialized"))
+            return
+        }
+
+        var completedCount = 0
+
+        fun takeNextShot(index: Int) {
+            if (index > totalCount) {
+                onBurstComplete()
+                return
+            }
+
+            onBurstProgress(index, totalCount)
+
+            imageCapture.takePicture(
+                captureExecutor,
+                object : ImageCapture.OnImageCapturedCallback() {
+                    override fun onCaptureSuccess(imageProxy: ImageProxy) {
+                        try {
+                            val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+                            val rawBitmap = imageProxy.toBitmap()
+                            imageProxy.close()
+
+                            val matrix = Matrix()
+                            if (rotationDegrees != 0) matrix.postRotate(rotationDegrees.toFloat())
+                            if (isFrontCamera) matrix.postScale(-1f, 1f)
+
+                            val orientedBitmap = if (rotationDegrees != 0 || isFrontCamera) {
+                                Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true)
+                            } else {
+                                rawBitmap
+                            }
+
+                            val filteredBitmap = filterPipelineManager.applyToBitmap(orientedBitmap)
+                            val thumbSize = 180
+                            val thumbnail = Bitmap.createScaledBitmap(
+                                filteredBitmap,
+                                thumbSize,
+                                (thumbSize * (filteredBitmap.height.toFloat() / filteredBitmap.width)).toInt().coerceAtLeast(1),
+                                true
+                            )
+
+                            val savedUri = saveBitmapToMediaStore(filteredBitmap)
+                            if (savedUri != null) {
+                                onPhotoSaved(savedUri, thumbnail)
+                            }
+
+                            completedCount++
+                            if (completedCount < totalCount) {
+                                // Small delay before taking next burst photo
+                                Thread.sleep(120)
+                                takeNextShot(completedCount + 1)
+                            } else {
+                                onBurstComplete()
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Burst capture step failed", e)
+                            completedCount++
+                            if (completedCount < totalCount) {
+                                takeNextShot(completedCount + 1)
+                            } else {
+                                onBurstComplete()
+                            }
+                        }
+                    }
+
+                    override fun onError(exception: ImageCaptureException) {
+                        Log.e(TAG, "Burst photo capture failed at $index: ${exception.message}", exception)
+                        completedCount++
+                        if (completedCount < totalCount) {
+                            takeNextShot(completedCount + 1)
+                        } else {
+                            onBurstComplete()
+                        }
+                    }
+                }
+            )
+        }
+
+        takeNextShot(1)
+    }
+
     private fun saveBitmapToMediaStore(bitmap: Bitmap): Uri? {
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val displayName = "IMG_LFC_$timeStamp.jpg"
